@@ -16,8 +16,16 @@ export class UpdateSettingsDto {
   defaultJpTimes?: string[];
 
   @IsOptional()
+  @IsString()
+  timezone;
+
+  @IsOptional()
   @IsNumber()
   defaultCommissionPct?: number;
+
+  @IsOptional()
+  @IsNumber()
+  agentNegativeBalanceLimt?: number;
 
   @IsOptional()
   @IsNumber()

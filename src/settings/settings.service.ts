@@ -20,8 +20,10 @@ export class SettingsService {
 
           defaultLdTimes: [], 
           defaultJpTimes: [],
+          timezone:"",
 
           defaultCommissionPct: 0,
+          agentNegativeBalanceLimt: 200,
 
           bidPrizeLD: 0,
           bidPrizeJP: 0,

@@ -1,0 +1,136 @@
+import {
+  Controller,
+  Post,
+  Body,
+  UseGuards,
+  Req,
+  Get,
+  Query,
+} from '@nestjs/common';
+import { WalletService } from './wallet.service';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { AdminGuard } from '../auth/guards/admin.guard';
+import { CreateDepositDto } from './dto/create-deposit.dto';
+import { ApproveDepositDto } from './dto/approve-deposit.dto';
+import { ConfirmWinningDto } from './dto/confirm-winning.dto';
+import { AdminPayDto } from './dto/admin-pay.dto';
+
+@Controller('wallet')
+export class WalletController {
+  constructor(private walletService: WalletService) {}
+
+  // -----------------------------------------
+  // Agent requests deposit (PENDING)
+  // -----------------------------------------
+  @Post('deposit/request')
+  @UseGuards(JwtAuthGuard)
+  requestDeposit(@Req() req, @Body() dto: CreateDepositDto) {
+    return this.walletService.requestBidDeposit(
+      req.user.userId,
+      dto.amount,
+      dto.transId,
+      dto.proofUrl,
+      dto.note,
+    );
+  }
+
+  // -----------------------------------------
+  // Admin approves/declines pending deposit
+  // -----------------------------------------
+  @Post('deposit/approve')
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  approveDeposit(@Req() req, @Body() dto: ApproveDepositDto) {
+    return this.walletService.approveDeposit(
+      req.user.userId, // adminId
+      dto.walletTxId,
+      dto.approve,
+      dto.adminNote,
+    );
+  }
+
+  // -----------------------------------------
+  // Get wallet balance: total / reserved / available
+  // -----------------------------------------
+  @Get('balance')
+  @UseGuards(JwtAuthGuard)
+  async getMyBalance(@Req() req) {
+    return this.walletService.getWalletBalance(req.user.userId);
+  }
+
+  // -----------------------------------------
+  // Wallet history
+  // -----------------------------------------
+  @Get('history')
+  @UseGuards(JwtAuthGuard)
+  history(
+    @Req() req,
+    @Query('page') page = 1,
+    @Query('pageSize') pageSize = 50,
+  ) {
+    return this.walletService.getWalletHistory(
+      req.user.userId,
+      Number(page),
+      Number(pageSize),
+    );
+  }
+
+  // -----------------------------------------
+  // Admin manually pays commission to agent
+  // -----------------------------------------
+  @Post('admin/commission/pay')
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  adminPayCommission(@Req() req, @Body() dto: AdminPayDto) {
+    return this.walletService.adminPayCommission(
+      req.user.userId, // admin
+      dto.userId, // agent
+      dto.amount,
+      dto.transId,
+      dto.note,
+    );
+  }
+
+  // -----------------------------------------
+  // Admin pays winning amount to agent (WIN_PAID)
+  // -----------------------------------------
+  @Post('admin/win/paid')
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  adminWinPaid(@Req() req, @Body() dto: AdminPayDto) {
+    return this.walletService.adminRecordWinPaid(
+      req.user.userId, // admin
+      dto.userId,      // agent
+      dto.amount,
+      dto.transId,
+      dto.note,
+    );
+  }
+
+  // -----------------------------------------
+  // Agent confirms payout to customer (WIN_CLEAR)
+  // -----------------------------------------
+  @Post('winning/confirm')
+  @UseGuards(JwtAuthGuard)
+  confirmWinning(@Req() req, @Body() dto: ConfirmWinningDto) {
+    return this.walletService.confirmWinClear(
+      req.user.userId,  // agent
+      dto.amount,
+      dto.transId,
+      dto.proofUrl,
+      dto.note,
+    );
+  }
+
+  // -----------------------------------------
+  // Admin processes agent withdraw (deduct balance)
+  // -----------------------------------------
+  @Post('admin/withdraw')
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  adminWithdraw(@Req() req, @Body() dto: any) {
+    return this.walletService.adminProcessWithdraw(
+      req.user.userId,   // admin
+      dto.agentId,        // agent
+      dto.amount,
+      dto.transId,
+      dto.note,
+    );
+  }
+}

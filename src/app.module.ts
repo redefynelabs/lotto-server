@@ -4,10 +4,11 @@ import { AppService } from './app.service';
 import { PrismaModule } from './prisma/prisma.module';
 import { ConfigModule } from '@nestjs/config';
 import { AuthModule } from './auth/auth.module';
-import { AdminModule } from './admin/admin.module';
 import { SlotModule } from './slot/slot.module';
 import { SettingsModule } from './settings/settings.module';
 import { ScheduleModule } from '@nestjs/schedule';
+import { WalletModule } from './wallet/wallet.module';
+import { BiddingModule } from './bidding/bidding.module';
 
 @Module({
   imports: [
@@ -17,9 +18,10 @@ import { ScheduleModule } from '@nestjs/schedule';
     ScheduleModule.forRoot(),
     PrismaModule,
     AuthModule,
-    AdminModule,
     SlotModule,
     SettingsModule,
+    WalletModule,
+    BiddingModule,
   ],
   controllers: [AppController],
   providers: [AppService],

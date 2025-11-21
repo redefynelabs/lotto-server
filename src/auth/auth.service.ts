@@ -11,6 +11,7 @@ import { Gender, Role } from '@prisma/client';
 import { hashPassword, comparePassword } from 'src/utils/password.util';
 import { generateOtp } from 'src/utils/otp.util';
 import { JwtService } from '@nestjs/jwt';
+import { ApproveAgentDto } from './dto/approve-agent.dto';
 
 @Injectable()
 export class AuthService {
@@ -96,6 +97,36 @@ export class AuthService {
     return { message: 'Phone verified successfully' };
   }
 
+  async approveAgent(dto: ApproveAgentDto) {
+    const agent = await this.prisma.user.findUnique({
+      where: { id: dto.agentId },
+    });
+
+    if (!agent || agent.role !== 'AGENT') {
+      throw new BadRequestException('Agent not found');
+    }
+
+    // Update approval and commission
+    const updated = await this.prisma.user.update({
+      where: { id: dto.agentId },
+      data: {
+        isApproved: true,
+      },
+    });
+
+    // Ensure wallets are created if missing
+    await this.prisma.wallet.upsert({
+      where: { userId: dto.agentId },
+      update: {},
+      create: { userId: dto.agentId },
+    });
+
+    return {
+      message: 'Agent approved successfully',
+      agent: updated,
+    };
+  }
+
   async login(dto: LoginDto) {
     const user = await this.prisma.user.findUnique({
       where: { phone: dto.phone },
@@ -121,6 +152,7 @@ export class AuthService {
       sub: user.id,
       role: user.role,
     });
+    
 
     return {
       message: 'Login successful',
