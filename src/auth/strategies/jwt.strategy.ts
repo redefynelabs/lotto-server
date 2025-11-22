@@ -5,14 +5,20 @@ import { ExtractJwt, Strategy } from 'passport-jwt';
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   constructor() {
+    const cookieExtractor = (req: any): string | null => {
+      return req?.cookies?.access_token || null;
+    };
+
     super({
-      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(), // read token from "Authorization: Bearer <token>"
+      jwtFromRequest: ExtractJwt.fromExtractors([
+        ExtractJwt.fromAuthHeaderAsBearerToken(),
+        cookieExtractor,
+      ]),
       ignoreExpiration: false,
       secretOrKey: process.env.JWT_SECRET,
     });
   }
 
-  // Whatever you return here becomes req.user
   async validate(payload: any) {
     return {
       userId: payload.sub,
