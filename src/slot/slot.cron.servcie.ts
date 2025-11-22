@@ -9,10 +9,10 @@ export class SlotCronService {
   constructor(private readonly slotService: SlotService) {}
 
   // 1. Auto-close slots when bidding window ends (every minute)
-  // Runs in UTC but closes based on windowCloseAt (which is already in UTC)
+  // Runs in UTC but closes based on windowCloseAt (which is stored in UTC)
   @Cron('0 * * * * *', {
     name: 'close-expired-slots-every-minute',
-    timeZone: 'UTC', // Keep cron in UTC — it's more reliable globally
+    timeZone: 'UTC',
   })
   async handleSlotAutoClosing() {
     try {
@@ -21,15 +21,14 @@ export class SlotCronService {
         this.logger.log(`Auto-closed ${result.count} expired slot(s)`);
       }
     } catch (error) {
-      this.logger.error('Failed to auto-close expired slots', error.stack);
+      this.logger.error('Failed to auto-close expired slots', error.stack ?? error);
     }
   }
 
   // 2. Generate future slots every day at 00:05 AM Malaysia Time
-  // This ensures midnight slots (00:00 & 00:15) are already generated
   @Cron('0 5 0 * * *', {
     name: 'generate-future-slots-malaysia',
-    timeZone: 'Asia/Kuala_Lumpur', // Critical: Runs at 00:05 AM Malaysia time
+    timeZone: 'Asia/Kuala_Lumpur',
   })
   async handleDailySlotGeneration() {
     this.logger.log('Malaysia 00:05 AM - Starting daily slot generation (7-day rolling)');
@@ -38,7 +37,7 @@ export class SlotCronService {
       const result = await this.slotService.generateFutureSlots();
       this.logger.log(result.message || 'Daily slot generation completed');
     } catch (error) {
-      this.logger.error('Failed to generate future slots', error.stack);
+      this.logger.error('Failed to generate future slots', error.stack ?? error);
     }
   }
 
@@ -56,7 +55,7 @@ export class SlotCronService {
 
       this.logger.log('Startup slot maintenance completed successfully');
     } catch (error) {
-      this.logger.error('Startup slot tasks failed', error.stack);
+      this.logger.error('Startup slot tasks failed', error.stack ?? error);
     }
   }
 }

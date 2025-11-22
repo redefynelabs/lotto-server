@@ -9,6 +9,7 @@ import { SettingsModule } from './settings/settings.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { WalletModule } from './wallet/wallet.module';
 import { BiddingModule } from './bidding/bidding.module';
+import { UserModule } from './user/user.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { BiddingModule } from './bidding/bidding.module';
     SettingsModule,
     WalletModule,
     BiddingModule,
+    UserModule,
   ],
   controllers: [AppController],
   providers: [AppService],

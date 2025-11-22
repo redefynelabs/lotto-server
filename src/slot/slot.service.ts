@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateSlotDto } from './dto/create-slot.dto';
 import { AdminUpdateSlotSettingsDto } from './dto/admin-update-slot-settings.dto';
@@ -10,14 +10,16 @@ import { DateTime } from 'luxon';
 
 @Injectable()
 export class SlotService {
+  private readonly logger = new Logger(SlotService.name);
+
   constructor(
     private prisma: PrismaService,
     private settingsService: SettingsService,
   ) {}
 
-  // ======================================================
+  // -------------------------
   // Create slot using settings
-  // ======================================================
+  // -------------------------
   async createSlot(dto: CreateSlotDto) {
     const settings = await this.settingsService.getSettings();
 
@@ -38,12 +40,14 @@ export class SlotService {
             winningPrize: settings.winningPrizeJP,
           };
 
+    // create - assume uniqueSlotId or unique constraint prevents exact duplicates
     return this.prisma.slot.create({
       data: {
         type: dto.type,
         uniqueSlotId,
         slotTime,
         windowCloseAt,
+        status: SlotStatus.OPEN,
         settingsJson: {
           ...pricing,
           ...(dto.settingsJson || {}),
@@ -52,25 +56,27 @@ export class SlotService {
     });
   }
 
-  // ======================================================
+  // -------------------------
   // Unique ID generator (LD0001, JP0001, etc.)
-  // ======================================================
+  // -------------------------
   async getNextSlotNumber(type: SlotType) {
     const prefix = type === SlotType.LD ? 'LD' : 'JP';
 
     const last = await this.prisma.slot.findFirst({
       where: { type },
       orderBy: { createdAt: 'desc' },
+      select: { uniqueSlotId: true },
     });
 
-    if (!last || !last.uniqueSlotId.startsWith(prefix)) return 1;
+    if (!last || !last.uniqueSlotId?.startsWith(prefix)) return 1;
 
-    return parseInt(last.uniqueSlotId.replace(prefix, ''), 10) + 1;
+    const num = parseInt(last.uniqueSlotId.replace(prefix, ''), 10);
+    return Number.isNaN(num) ? 1 : num + 1;
   }
 
-  // ======================================================
+  // -------------------------
   // Admin slot update
-  // ======================================================
+  // -------------------------
   async updateSlot(slotId: string, dto: AdminUpdateSlotSettingsDto) {
     const existing = await this.prisma.slot.findUnique({
       where: { id: slotId },
@@ -101,73 +107,85 @@ export class SlotService {
     });
   }
 
-  // ======================================================
-  // Rolling slot generation logic (always keep next 7 days)
-  // ======================================================
-  // ======================================================
-  // Rolling slot generation: Always keep exactly 7 days of OPEN slots
-  // ======================================================
+  // -------------------------
+  // Rolling slot generation: ensure next 7 days exist (idempotent)
+  // -------------------------
   async generateFutureSlots() {
     const settings = await this.settingsService.getSettings();
 
-    const nowMYT = getMalaysiaDate();
+    const nowMYT = getMalaysiaDate(); // DateTime in MYT zone
     const todayMidnightMYT = nowMYT.startOf('day');
 
-    // Find how many future OPEN days we have (in Malaysia time)
-    const upcomingOpenSlots = await this.prisma.slot.findMany({
-      where: {
-        status: SlotStatus.OPEN,
-        slotTime: { gt: new Date() },
-      },
-      orderBy: { slotTime: 'asc' },
-    });
-
-    const openMalaysiaDates = new Set<string>();
-    for (const slot of upcomingOpenSlots) {
-      const myt = getMalaysiaDate(slot.slotTime);
-      openMalaysiaDates.add(myt.toISODate()!); // YYYY-MM-DD
+    // Target: next 7 days (tomorrow .. tomorrow + 6)
+    const targetDays: DateTime[] = [];
+    for (let d = 1; d <= 7; d++) {
+      targetDays.push(todayMidnightMYT.plus({ days: d }));
     }
 
-    const neededDays = 7 - openMalaysiaDates.size;
-    if (neededDays <= 0) {
-      return { message: 'Already have 7 days of open slots (Malaysia time)' };
-    }
-
-    // Start generating from the next missing Malaysia day
-    let currentDay =
-      openMalaysiaDates.size > 0
-        ? DateTime.fromISO([...openMalaysiaDates].sort().pop()!, {
-            zone: MYT,
-          }).plus({ days: 1 })
-        : todayMidnightMYT.plus({ days: 1 }); // tomorrow
-
-    for (let i = 0; i < neededDays; i++) {
-      const nextDay = currentDay.plus({ days: i });
-      await this.generateSlotsForDay(nextDay.toJSDate(), settings);
+    let createdCount = 0;
+    for (const dt of targetDays) {
+      const created = await this.ensureAllTimesExistForDay(dt.toJSDate(), settings);
+      createdCount += created;
     }
 
     return {
-      message: `Generated ${neededDays} new days. Now have 7 open days in Malaysia time.`,
+      message: `Ensured 7 days of slots (created ${createdCount} missing slots).`,
+      createdCount,
     };
   }
 
-  // ======================================================
-  // Generate all slots for a single day
-  // ======================================================
-  private async generateSlotsForDay(malaysiaDate: Date, settings: any) {
-    // LD Slots
-    for (const t of settings.defaultLdTimes) {
-      await this.createTimedSlot(SlotType.LD, malaysiaDate, t);
+  // Ensure all required times exist for a Malaysia date (idempotent)
+  private async ensureAllTimesExistForDay(malaysiaDate: Date, settings: any) {
+    // Start and end of that Malaysia day in UTC
+    const dayStartMYT = getMalaysiaDate(malaysiaDate).startOf('day'); // DateTime in MYT
+    const dayEndMYT = dayStartMYT.endOf('day');
+
+    const dayStartUTC = toUTCDate(dayStartMYT).toISOString();
+    const dayEndUTC = toUTCDate(dayEndMYT).toISOString();
+
+    // Fetch existing slots within that UTC window
+    const existing = await this.prisma.slot.findMany({
+      where: {
+        slotTime: {
+          gte: new Date(dayStartUTC),
+          lte: new Date(dayEndUTC),
+        },
+      },
+      select: { type: true, slotTime: true },
+    });
+
+    const existingTimesByType = {
+      [SlotType.LD]: new Set<string>(),
+      [SlotType.JP]: new Set<string>(),
+    };
+
+    for (const s of existing) {
+      const myt = getMalaysiaDate(s.slotTime);
+      existingTimesByType[s.type].add(myt.toFormat('HH:mm'));
     }
 
-    // JP Jackpot – only one per day
-    for (const t of settings.defaultJpTimes) {
-      await this.createTimedSlot(SlotType.JP, malaysiaDate, t);
+    let created = 0;
+
+    // Create missing LD times
+    for (const t of settings.defaultLdTimes) {
+      if (!existingTimesByType[SlotType.LD].has(t)) {
+        await this.createTimedSlot(SlotType.LD, malaysiaDate, t);
+        created++;
+      }
     }
+
+    // Create missing JP times
+    for (const t of settings.defaultJpTimes) {
+      if (!existingTimesByType[SlotType.JP].has(t)) {
+        await this.createTimedSlot(SlotType.JP, malaysiaDate, t);
+        created++;
+      }
+    }
+
+    return created;
   }
-  // ======================================================
-  // Create a slot using date + time
-  // ======================================================
+
+  // Create slot for given Malaysia date + time (idempotent because createSlot checks exists)
   private async createTimedSlot(
     type: SlotType,
     malaysiaDate: Date,
@@ -175,7 +193,7 @@ export class SlotService {
   ) {
     const [h, m] = time.split(':').map(Number);
 
-    // Build the full Malaysia datetime
+    // Build the full Malaysia datetime using luxon
     const mytDateTime = getMalaysiaDate(malaysiaDate).set({
       hour: h,
       minute: m,
@@ -183,25 +201,32 @@ export class SlotService {
       millisecond: 0,
     });
 
-    const slotTimeUTC = toUTCDate(mytDateTime);
+    // convert to UTC Date for DB storage
+    const slotTimeUTC = toUTCDate(mytDateTime); // should return luxon DateTime or Date - adapt below
 
-    // Check if already exists
+    // Normalize slotTime as JS Date for prisma
+    const slotTimeJs = slotTimeUTC instanceof Date ? slotTimeUTC : (slotTimeUTC as any).toJSDate();
+
+    // Check if exists already
     const exists = await this.prisma.slot.findFirst({
       where: {
         type,
-        slotTime: slotTimeUTC,
+        slotTime: slotTimeJs,
       },
     });
 
     if (exists) return;
 
+    // createSlot expects ISO string
     await this.createSlot({
       type,
-      slotTime: slotTimeUTC.toISOString(),
+      slotTime: slotTimeJs.toISOString(),
     });
   }
 
+  // -------------------------
   // Auto-close expired slots (called by cron)
+  // -------------------------
   async closeExpiredSlots() {
     const now = new Date();
 
@@ -215,12 +240,21 @@ export class SlotService {
       },
     });
 
+    // If any slots were closed, ensure we still have 7 days of future slots
+    if (result.count > 0) {
+      try {
+        await this.generateFutureSlots();
+      } catch (err) {
+        this.logger.error('Failed to generate future slots after closing', err);
+      }
+    }
+
     return result;
   }
 
-  // ======================================================
+  // -------------------------
   // Public: get all open upcoming slots
-  // ======================================================
+  // -------------------------
   async getActiveSlots() {
     return this.prisma.slot.findMany({
       where: {
