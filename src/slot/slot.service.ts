@@ -124,7 +124,10 @@ export class SlotService {
 
     let createdCount = 0;
     for (const dt of targetDays) {
-      const created = await this.ensureAllTimesExistForDay(dt.toJSDate(), settings);
+      const created = await this.ensureAllTimesExistForDay(
+        dt.toJSDate(),
+        settings,
+      );
       createdCount += created;
     }
 
@@ -205,7 +208,10 @@ export class SlotService {
     const slotTimeUTC = toUTCDate(mytDateTime); // should return luxon DateTime or Date - adapt below
 
     // Normalize slotTime as JS Date for prisma
-    const slotTimeJs = slotTimeUTC instanceof Date ? slotTimeUTC : (slotTimeUTC as any).toJSDate();
+    const slotTimeJs =
+      slotTimeUTC instanceof Date
+        ? slotTimeUTC
+        : (slotTimeUTC as any).toJSDate();
 
     // Check if exists already
     const exists = await this.prisma.slot.findFirst({
@@ -253,11 +259,48 @@ export class SlotService {
   }
 
   // -------------------------
+  // Public: get all slots
+  // -------------------------
+  async getAllSlots() {
+    return this.prisma.slot.findMany({
+      orderBy: { slotTime: 'asc' },
+    });
+  }
+
+  // -------------------------
   // Public: get all open upcoming slots
   // -------------------------
   async getActiveSlots() {
     return this.prisma.slot.findMany({
       where: {
+        status: SlotStatus.OPEN,
+        slotTime: { gte: new Date() },
+      },
+      orderBy: { slotTime: 'asc' },
+    });
+  }
+
+  // -------------------------
+  // Get only ACTIVE LD slots
+  // -------------------------
+  async getActiveLdSlots() {
+    return this.prisma.slot.findMany({
+      where: {
+        type: SlotType.LD,
+        status: SlotStatus.OPEN,
+        slotTime: { gte: new Date() },
+      },
+      orderBy: { slotTime: 'asc' },
+    });
+  }
+
+  // -------------------------
+  // Get only ACTIVE JP slots
+  // -------------------------
+  async getActiveJpSlots() {
+    return this.prisma.slot.findMany({
+      where: {
+        type: SlotType.JP,
         status: SlotStatus.OPEN,
         slotTime: { gte: new Date() },
       },

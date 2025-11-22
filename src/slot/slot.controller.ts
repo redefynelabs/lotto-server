@@ -27,10 +27,7 @@ export class SlotController {
   // Admin: update slot manually
   @Patch(':id')
   @UseGuards(JwtAuthGuard, AdminGuard)
-  update(
-    @Param('id') id: string,
-    @Body() dto: AdminUpdateSlotSettingsDto,
-  ) {
+  update(@Param('id') id: string, @Body() dto: AdminUpdateSlotSettingsDto) {
     return this.slotService.updateSlot(id, dto);
   }
 
@@ -41,9 +38,25 @@ export class SlotController {
     return this.slotService.generateFutureSlots();
   }
 
+  // Public: get all slots
+  @Get('all')
+  getAll() {
+    return this.slotService.getAllSlots();
+  }
   // Public: get upcoming open slots
   @Get('active')
   getActive() {
     return this.slotService.getActiveSlots();
   }
+
+  @Get('active/ld')
+  getActiveLd() {
+    return this.slotService.getActiveLdSlots();
+  }
+
+  @Get('active/jp')
+  getActiveJp() {
+    return this.slotService.getActiveJpSlots();
+  }
+
 }
