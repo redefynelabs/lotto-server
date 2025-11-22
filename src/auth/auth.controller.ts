@@ -6,7 +6,9 @@ import {
   UnauthorizedException,
   Patch,
   UseGuards,
+  Res,
 } from '@nestjs/common';
+import express from 'express';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
@@ -35,8 +37,45 @@ export class AuthController {
     return this.authService.approveAgent(dto);
   }
 
-  @Post('login')
-  async login(@Body() dto: LoginDto) {
-    return this.authService.login(dto);
+  // auth.controller.ts → login
+@Post('login')
+async login(@Body() dto: LoginDto, @Res({ passthrough: true }) res: express.Response) {
+  const result = await this.authService.login(dto);
+
+  // Set httpOnly cookie
+  res.cookie('access_token', result.accessToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'strict',
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    path: '/',
+  });
+
+  // Also set non-httpOnly user cookie for middleware
+  res.cookie('app_user', JSON.stringify(result.user), {
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'strict',
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+    path: '/',
+  });
+
+  // Don't return token in body
+  const { accessToken, ...safe } = result;
+  return safe;
+}
+
+  @Post('logout')
+  @UseGuards(JwtAuthGuard) // optional: only logged-in users can logout
+  async logout(@Res({ passthrough: true }) res: express.Response) {
+    // Clear the httpOnly cookie
+    res.clearCookie('access_token', {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      path: '/',
+    });
+
+    return { message: 'Logged out successfully' };
   }
+
 }

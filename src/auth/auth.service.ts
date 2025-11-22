@@ -152,12 +152,19 @@ export class AuthService {
       sub: user.id,
       role: user.role,
     });
-    
 
     return {
       message: 'Login successful',
       accessToken: token,
-      user,
+      user: {
+        id: user.id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        phone: user.phone,
+        email: user.email,
+        role: user.role,
+        isApproved: user.isApproved,
+      },
     };
   }
 }
