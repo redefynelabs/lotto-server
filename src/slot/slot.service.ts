@@ -84,6 +84,17 @@ export class SlotService {
 
     if (!existing) throw new BadRequestException('Slot not found');
 
+    // ⭐ BLOCK EDIT IF BIDS ALREADY EXIST
+    const hasBids = await this.prisma.bid.count({
+      where: { slotId },
+    });
+
+    if (hasBids > 0) {
+      throw new BadRequestException(
+        'Cannot modify this slot because bids already exist.',
+      );
+    }
+
     let windowCloseAt = existing.windowCloseAt;
 
     if (dto.slotTime) {
@@ -113,16 +124,25 @@ export class SlotService {
   async generateFutureSlots() {
     const settings = await this.settingsService.getSettings();
 
-    const nowMYT = getMalaysiaDate(); // DateTime in MYT zone
+    const daysToGenerate = settings.slotAutoGenerateCount; // ⭐ dynamic count
+
+    if (!daysToGenerate || daysToGenerate <= 0) {
+      throw new BadRequestException(
+        'slotAutoGenerateCount must be greater than 0',
+      );
+    }
+
+    const nowMYT = getMalaysiaDate();
     const todayMidnightMYT = nowMYT.startOf('day');
 
-    // Target: next 7 days (tomorrow .. tomorrow + 6)
+    // Target: next N days (tomorrow .. tomorrow + (count - 1))
     const targetDays: DateTime[] = [];
-    for (let d = 1; d <= 7; d++) {
+    for (let d = 1; d <= daysToGenerate; d++) {
       targetDays.push(todayMidnightMYT.plus({ days: d }));
     }
 
     let createdCount = 0;
+
     for (const dt of targetDays) {
       const created = await this.ensureAllTimesExistForDay(
         dt.toJSDate(),
@@ -132,8 +152,9 @@ export class SlotService {
     }
 
     return {
-      message: `Ensured 7 days of slots (created ${createdCount} missing slots).`,
+      message: `Ensured ${daysToGenerate} days of slots (created ${createdCount} missing slots).`,
       createdCount,
+      daysGenerated: daysToGenerate,
     };
   }
 
@@ -253,6 +274,31 @@ export class SlotService {
       } catch (err) {
         this.logger.error('Failed to generate future slots after closing', err);
       }
+    }
+
+    return result;
+  }
+
+  async getSlotsGroupedByMalaysiaDate() {
+    const slots = await this.prisma.slot.findMany({
+      orderBy: { slotTime: 'asc' },
+    });
+
+    const result: Record<string, any[]> = {};
+
+    for (const s of slots) {
+      // convert UTC → MYT
+      const myt = getMalaysiaDate(s.slotTime);
+
+      // Extract Malaysia date (YYYY-MM-DD)
+      const dateKey = myt.toFormat('yyyy-MM-dd');
+
+      if (!result[dateKey]) result[dateKey] = [];
+      result[dateKey].push({
+        ...s,
+        slotTimeMYT: myt.toISO(), // optional: return MYT time to frontend
+        slotTimeFormatted: myt.toFormat('HH:mm'),
+      });
     }
 
     return result;

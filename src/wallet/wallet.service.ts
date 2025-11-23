@@ -1,3 +1,4 @@
+// src/wallet/wallet.service.ts
 import {
   Injectable,
   BadRequestException,
@@ -5,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { Decimal } from '@prisma/client/runtime/client';
+import { WalletTxType } from '@prisma/client';
 
 @Injectable()
 export class WalletService {
@@ -45,22 +47,19 @@ export class WalletService {
   ) {
     if (amount <= 0) throw new BadRequestException('Amount must be > 0');
 
-    // ensure wallet exists
     let wallet = await this.prisma.wallet.findUnique({ where: { userId } });
     if (!wallet) {
-      // create wallet record on demand
       wallet = await this.prisma.wallet.create({
         data: { userId, totalBalance: 0, reservedWinning: 0 },
       });
     }
 
-    // create a pending deposit tx (we store it as a tx but don't change balance until admin approves)
     const tx = await this.prisma.walletTx.create({
       data: {
         walletId: wallet.id,
-        type: 'BID_CREDIT',
-        amount: amount,
-        balanceAfter: wallet.totalBalance, // no change yet
+        type: WalletTxType.BID_CREDIT,
+        amount,
+        balanceAfter: wallet.totalBalance,
         meta: {
           transId,
           proofUrl,
@@ -76,8 +75,6 @@ export class WalletService {
 
   // ----------------------------
   // Admin approves/declines the deposit request created above
-  // If approve: apply amount to wallet.totalBalance and log final tx (BID_CREDIT approved)
-  // If decline: update the pending tx meta to show declined
   // ----------------------------
   async approveDeposit(
     adminId: string,
@@ -89,25 +86,23 @@ export class WalletService {
       where: { id: walletTxId },
     });
     if (!pending) throw new NotFoundException('Deposit transaction not found');
-    if (pending.type !== 'BID_CREDIT')
+    if (pending.type !== WalletTxType.BID_CREDIT)
       throw new BadRequestException('Transaction is not a deposit request');
 
     const meta = (pending.meta || {}) as Record<string, any>;
 
     if (!approve) {
-      // simply update status and exit
       const updated = await this.prisma.walletTx.update({
         where: { id: walletTxId },
         data: {
           meta: {
-            ...(meta as Record<string, any>),
+            ...meta,
             status: 'DECLINED',
-            adminNote,
             approvedBy: adminId,
+            adminNote,
           },
         },
       });
-
       return { message: 'Deposit declined', tx: updated };
     }
 
@@ -119,13 +114,11 @@ export class WalletService {
 
       const newTotal = Number(wallet.totalBalance) + Number(pending.amount);
 
-      // update wallet balance
       await tx.wallet.update({
         where: { id: wallet.id },
         data: { totalBalance: newTotal },
       });
 
-      // UPDATE SAME TRANSACTION (not creating a new one)
       const updatedTx = await tx.walletTx.update({
         where: { id: walletTxId },
         data: {
@@ -142,17 +135,14 @@ export class WalletService {
       return {
         message: 'Deposit approved',
         tx: updatedTx,
-        wallet: {
-          totalBalance: newTotal,
-        },
+        wallet: { totalBalance: newTotal },
       };
     });
   }
 
   // ----------------------------
   // Debit for a bid (BID_DEBIT)
-  // This is used by bidding module when an agent places a bid.
-  // It reduces totalBalance immediately (may go negative, but respect negativeLimit)
+  // Atomic and respects negative limit from app settings
   // ----------------------------
   async debitForBid(userId: string, amount: number, meta: any = {}) {
     if (amount <= 0) throw new BadRequestException('Amount must be > 0');
@@ -187,7 +177,7 @@ export class WalletService {
       const txRecord = await tx.walletTx.create({
         data: {
           walletId: wallet.id,
-          type: 'BID_DEBIT',
+          type: WalletTxType.BID_DEBIT,
           amount: -amount,
           balanceAfter: newTotal,
           meta,
@@ -207,14 +197,14 @@ export class WalletService {
   }
 
   // ----------------------------
-  // Commission auto credit (COMMISSION_CREDIT) - system triggered
-  // Simple model: credit directly to wallet (no separate debt adjust). BalanceAfter reflects new wallet.totalBalance.
+  // Commission auto credit (COMMISSION_CREDIT)
+  // Called by bidding flow when commission is computed.
+  // This *credits* agent wallet immediately (reduces negative debt if any).
   // ----------------------------
   async creditCommission(userId: string, amount: number, meta: any = {}) {
     if (amount <= 0) throw new BadRequestException('Amount must be > 0');
 
     return this.prisma.$transaction(async (tx) => {
-      // ensure wallet exists
       let wallet = await tx.wallet.findUnique({ where: { userId } });
       if (!wallet) {
         wallet = await tx.wallet.create({
@@ -222,23 +212,20 @@ export class WalletService {
         });
       }
 
-      const reserved = Number(wallet.reservedWinning);
       const prevTotal = Number(wallet.totalBalance);
+      const reserved = Number(wallet.reservedWinning);
 
-      // New total after credit
       const newTotal = prevTotal + amount;
 
-      // update wallet total
       await tx.wallet.update({
         where: { id: wallet.id },
         data: { totalBalance: newTotal },
       });
 
-      // record commission tx
       const commissionTx = await tx.walletTx.create({
         data: {
           walletId: wallet.id,
-          type: 'COMMISSION_CREDIT',
+          type: WalletTxType.COMMISSION_CREDIT,
           amount,
           balanceAfter: newTotal,
           meta,
@@ -258,10 +245,11 @@ export class WalletService {
   }
 
   // ----------------------------
-  // Admin manually pays commission / topup (COMMISSION_PAID)
-  // Simple model: credit directly to wallet.
+  // Admin settles commission to agent (COMMISSION_SETTLEMENT)
+  // This represents company paying the credited commission to the agent (cash out).
+  // It reduces the agent wallet (deducts from totalBalance).
   // ----------------------------
-  async adminPayCommission(
+  async settleCommissionByAdmin(
     adminId: string,
     userId: string,
     amount: number,
@@ -271,48 +259,51 @@ export class WalletService {
     if (amount <= 0) throw new BadRequestException('Amount must be > 0');
 
     return this.prisma.$transaction(async (tx) => {
-      let wallet = await tx.wallet.findUnique({ where: { userId } });
-      if (!wallet) {
-        wallet = await tx.wallet.create({
-          data: { userId, totalBalance: 0, reservedWinning: 0 },
-        });
+      const wallet = await tx.wallet.findUnique({ where: { userId } });
+      if (!wallet) throw new NotFoundException('Wallet not found');
+
+      const total = Number(wallet.totalBalance);
+      const reserved = Number(wallet.reservedWinning);
+      const available = total - reserved;
+
+      if (amount > available) {
+        throw new BadRequestException(
+          'Insufficient available balance to settle commission',
+        );
       }
 
-      const reserved = Number(wallet.reservedWinning);
-      const prevTotal = Number(wallet.totalBalance);
-
-      const newTotal = prevTotal + amount;
+      const newTotal = total - amount;
 
       await tx.wallet.update({
         where: { id: wallet.id },
         data: { totalBalance: newTotal },
       });
 
-      const txRec = await tx.walletTx.create({
+      const settlementTx = await tx.walletTx.create({
         data: {
           walletId: wallet.id,
-          type: 'COMMISSION_PAID',
-          amount,
+          type: WalletTxType.COMMISSION_SETTLEMENT,
+          amount: -amount,
           balanceAfter: newTotal,
           meta: { transId, adminId, note },
         },
       });
 
       return {
-        message: 'Commission paid successfully',
+        message: 'Commission settled (paid) by admin',
+        tx: settlementTx,
         wallet: {
           totalBalance: newTotal,
           reservedWinning: reserved,
           available: newTotal - reserved,
         },
-        tx: txRec,
       };
     });
   }
 
   // ----------------------------
   // Winning reserved (WIN_CREDIT)
-  // System marks winning as reserved (does NOT credit wallet.totalBalance).
+  // System marks winning as reserved (does NOT credit wallet.totalBalance)
   // ----------------------------
   async creditWinning(userId: string, amount: number, meta: any = {}) {
     if (amount <= 0) throw new BadRequestException('Amount must be > 0');
@@ -324,7 +315,6 @@ export class WalletService {
       const prevTotal = Number(wallet.totalBalance);
       let reserved = Number(wallet.reservedWinning);
 
-      // reserve winning amount (doesn't touch totalBalance)
       reserved += amount;
 
       await tx.wallet.update({
@@ -335,7 +325,7 @@ export class WalletService {
       const txRec = await tx.walletTx.create({
         data: {
           walletId: wallet.id,
-          type: 'WIN_CREDIT',
+          type: WalletTxType.WIN_CREDIT,
           amount,
           balanceAfter: prevTotal,
           meta: { ...meta, note: 'winning reserved until admin payment' },
@@ -355,9 +345,10 @@ export class WalletService {
   }
 
   // ----------------------------
-  // Admin records WIN_PAID (company paid agent) -> credit wallet totalBalance
+  // Admin records WIN settlement -> company pays agent (WIN_SETTLEMENT_ADMIN_TO_AGENT)
+  // This credits agent wallet (company paid).
   // ----------------------------
-  async adminRecordWinPaid(
+  async winningSettlementToAgent(
     adminId: string,
     userId: string,
     amount: number,
@@ -370,9 +361,8 @@ export class WalletService {
       let wallet = await tx.wallet.findUnique({ where: { userId } });
       if (!wallet) throw new NotFoundException('Wallet not found');
 
-      const reserved = Number(wallet.reservedWinning);
       const prevTotal = Number(wallet.totalBalance);
-
+      const reserved = Number(wallet.reservedWinning);
       const newTotal = prevTotal + amount;
 
       await tx.wallet.update({
@@ -383,7 +373,7 @@ export class WalletService {
       const txRec = await tx.walletTx.create({
         data: {
           walletId: wallet.id,
-          type: 'WIN_PAID',
+          type: WalletTxType.WIN_SETTLEMENT_ADMIN_TO_AGENT,
           amount,
           balanceAfter: newTotal,
           meta: { transId, adminId, note },
@@ -391,22 +381,22 @@ export class WalletService {
       });
 
       return {
-        message: 'Winning credited to wallet',
+        message: 'Winning amount credited to agent by admin',
+        tx: txRec,
         wallet: {
           totalBalance: newTotal,
           reservedWinning: reserved,
           available: newTotal - reserved,
         },
-        tx: txRec,
       };
     });
   }
 
   // ----------------------------
-  // Agent confirms they cleared the winning to the customer (WIN_CLEAR)
+  // Agent confirms they cleared the winning to the customer (WIN_SETTLEMENT_AGENT_TO_USER)
   // This reduces reservedWinning and reduces totalBalance by same amount.
   // ----------------------------
-  async confirmWinClear(
+  async winningSettlementToUser(
     userId: string,
     amount: number,
     transId: string,
@@ -425,7 +415,6 @@ export class WalletService {
       if (reserved < amount)
         throw new BadRequestException('Reserved winning not enough');
 
-      // Deduct both
       reserved -= amount;
       total -= amount;
 
@@ -437,7 +426,7 @@ export class WalletService {
       const txRec = await tx.walletTx.create({
         data: {
           walletId: wallet.id,
-          type: 'WIN_CLEAR',
+          type: WalletTxType.WIN_SETTLEMENT_AGENT_TO_USER,
           amount: -amount,
           balanceAfter: total,
           meta: { transId, proofUrl, note },
@@ -445,7 +434,7 @@ export class WalletService {
       });
 
       return {
-        message: 'Winning cleared by agent',
+        message: 'Winning settled to user by agent',
         wallet: {
           totalBalance: total,
           reservedWinning: reserved,
@@ -457,8 +446,7 @@ export class WalletService {
   }
 
   // ----------------------------
-  // Withdraw (admin processed): agent requests withdraw, admin processes by creating a tx that reduces totalBalance
-  // This helper is to process a withdraw (admin action) — amount deducted from available only
+  // Admin processes agent withdraw (deduct balance)
   // ----------------------------
   async adminProcessWithdraw(
     adminId: string,
@@ -492,7 +480,7 @@ export class WalletService {
       const txRec = await tx.walletTx.create({
         data: {
           walletId: wallet.id,
-          type: 'WITHDRAW',
+          type: WalletTxType.WITHDRAW,
           amount: -amount,
           balanceAfter: newTotal,
           meta: { transId, adminId, note },
@@ -512,7 +500,7 @@ export class WalletService {
   }
 
   // ----------------------------
-  // Get wallet balance
+  // Get wallet balance + commission fields
   // ----------------------------
   async getWalletBalance(userId: string) {
     const wallet = await this.prisma.wallet.findUnique({ where: { userId } });
@@ -522,11 +510,45 @@ export class WalletService {
     const reserved = Number(wallet.reservedWinning);
     const available = total - reserved;
 
+    const commissionAgg = await this.prisma.walletTx.aggregate({
+      where: { walletId: wallet.id, type: WalletTxType.COMMISSION_CREDIT },
+      _sum: { amount: true },
+    });
+    const commissionEarned = Number(commissionAgg._sum.amount || 0);
+
+    const commissionSettledAgg = await this.prisma.walletTx.aggregate({
+      where: { walletId: wallet.id, type: WalletTxType.COMMISSION_SETTLEMENT },
+      _sum: { amount: true },
+    });
+    // commission settlement amounts are stored as negative amounts (we created -amount)
+    const commissionSettled = Math.abs(
+      Number(commissionSettledAgg._sum.amount || 0),
+    );
+
+    const commissionPending = commissionEarned - commissionSettled;
+
     return {
       totalBalance: total,
       reservedWinning: reserved,
       availableBalance: available,
+      commissionEarned,
+      commissionSettled,
+      commissionPending,
     };
+  }
+
+  // ----------------------------
+  // Get pending deposits (admin)
+  // ----------------------------
+  async getPendingDeposits() {
+    return this.prisma.walletTx.findMany({
+      where: {
+        type: WalletTxType.BID_CREDIT,
+        meta: { path: ['status'], equals: 'PENDING' },
+      },
+      orderBy: { createdAt: 'desc' },
+      include: { wallet: { include: { user: true } } },
+    });
   }
 
   // ----------------------------
@@ -550,5 +572,103 @@ export class WalletService {
     });
 
     return { items, total, page, pageSize };
+  }
+
+  // ----------------------------
+  // Commission summary for admin
+  // - earned: sum(COMMISSION_CREDIT)
+  // - settled: abs(sum(COMMISSION_SETTLEMENT)) (we store them as negative amounts)
+  // - pending = earned - settled
+  // - walletBalance is the agent wallet totalBalance
+  // - if agent wallet negative, pending is locked (admin cannot pay)
+  // ----------------------------
+  async getCommissionSummary() {
+    const agents = await this.prisma.user.findMany({
+      where: { role: 'AGENT', isApproved: true },
+      include: { wallet: true },
+    });
+
+    const result: Array<{
+      agentId: string;
+      name: string;
+      earned: number;
+      settled: number;
+      pending: number;
+      lockedPending: number;
+      walletBalance: number;
+    }> = [];
+
+    for (const a of agents) {
+      const wallet = a.wallet?.[0];
+      const balance = wallet ? Number(wallet.totalBalance) : 0;
+
+      const earnedAgg = await this.prisma.walletTx.aggregate({
+        where: {
+          walletId: wallet?.id || '',
+          type: WalletTxType.COMMISSION_CREDIT,
+        },
+        _sum: { amount: true },
+      });
+
+      const settledAgg = await this.prisma.walletTx.aggregate({
+        where: {
+          walletId: wallet?.id || '',
+          type: WalletTxType.COMMISSION_SETTLEMENT,
+        },
+        _sum: { amount: true },
+      });
+
+      const earned = Number(earnedAgg._sum.amount || 0);
+      const settled = Math.abs(Number(settledAgg._sum.amount || 0));
+
+      const fullPending = earned - settled;
+      let pending = fullPending;
+      let lockedPending = 0;
+
+      if (balance < 0) {
+        // if wallet is negative, admin cannot settle — lock pending
+        lockedPending = fullPending;
+        pending = 0;
+      }
+
+      result.push({
+        agentId: a.id,
+        name:
+          `${a.firstName || ''} ${a.lastName || ''}`.trim() ||
+          a.phone ||
+          a.email ||
+          a.id,
+        earned,
+        settled,
+        pending,
+        lockedPending,
+        walletBalance: balance,
+      });
+    }
+
+    return result;
+  }
+
+  async getPendingWinningSettlements() {
+    return this.prisma.wallet
+      .findMany({
+        where: {
+          reservedWinning: { gt: 0 },
+          user: { role: 'AGENT', isApproved: true },
+        },
+        include: {
+          user: true,
+        },
+      })
+      .then((list) =>
+        list.map((w) => ({
+          agentId: w.userId,
+          name: w.user.firstName + ' ' + w.user.lastName,
+          phone: w.user.phone,
+          reservedWinning: Number(w.reservedWinning),
+          walletBalance: Number(w.totalBalance),
+          pending: Number(w.reservedWinning), // admin must pay this
+        })),
+      );
   }
 }

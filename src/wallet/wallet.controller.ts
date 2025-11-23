@@ -1,3 +1,4 @@
+// src/wallet/wallet.controller.ts
 import {
   Controller,
   Post,
@@ -19,9 +20,7 @@ import { AdminPayDto } from './dto/admin-pay.dto';
 export class WalletController {
   constructor(private walletService: WalletService) {}
 
-  // -----------------------------------------
   // Agent requests deposit (PENDING)
-  // -----------------------------------------
   @Post('deposit/request')
   @UseGuards(JwtAuthGuard)
   requestDeposit(@Req() req, @Body() dto: CreateDepositDto) {
@@ -34,32 +33,26 @@ export class WalletController {
     );
   }
 
-  // -----------------------------------------
   // Admin approves/declines pending deposit
-  // -----------------------------------------
   @Post('deposit/approve')
   @UseGuards(JwtAuthGuard, AdminGuard)
   approveDeposit(@Req() req, @Body() dto: ApproveDepositDto) {
     return this.walletService.approveDeposit(
-      req.user.userId, // adminId
+      req.user.userId,
       dto.walletTxId,
       dto.approve,
       dto.adminNote,
     );
   }
 
-  // -----------------------------------------
-  // Get wallet balance: total / reserved / available
-  // -----------------------------------------
+  // Get wallet balance (agent or admin viewing own)
   @Get('balance')
   @UseGuards(JwtAuthGuard)
   async getMyBalance(@Req() req) {
     return this.walletService.getWalletBalance(req.user.userId);
   }
 
-  // -----------------------------------------
-  // Wallet history
-  // -----------------------------------------
+  // Wallet history (paginated)
   @Get('history')
   @UseGuards(JwtAuthGuard)
   history(
@@ -74,44 +67,38 @@ export class WalletController {
     );
   }
 
-  // -----------------------------------------
-  // Admin manually pays commission to agent
-  // -----------------------------------------
-  @Post('admin/commission/pay')
+  // Admin: settle commission to agent (will deduct wallet balance, create COMMISSION_SETTLEMENT tx)
+  @Post('admin/commission/settle-to-agent')
   @UseGuards(JwtAuthGuard, AdminGuard)
-  adminPayCommission(@Req() req, @Body() dto: AdminPayDto) {
-    return this.walletService.adminPayCommission(
-      req.user.userId, // admin
-      dto.userId, // agent
+  settleCommission(@Req() req, @Body() dto: AdminPayDto) {
+    return this.walletService.settleCommissionByAdmin(
+      req.user.userId,
+      dto.userId,
       dto.amount,
       dto.transId,
       dto.note,
     );
   }
 
-  // -----------------------------------------
-  // Admin pays winning amount to agent (WIN_PAID)
-  // -----------------------------------------
-  @Post('admin/win/paid')
+  // Admin pays winning amount to agent (company -> agent) - credits agent wallet
+  @Post('admin/win/settle-to-agent')
   @UseGuards(JwtAuthGuard, AdminGuard)
   adminWinPaid(@Req() req, @Body() dto: AdminPayDto) {
-    return this.walletService.adminRecordWinPaid(
-      req.user.userId, // admin
-      dto.userId,      // agent
+    return this.walletService.winningSettlementToAgent(
+      req.user.userId,
+      dto.userId,
       dto.amount,
       dto.transId,
       dto.note,
     );
   }
 
-  // -----------------------------------------
-  // Agent confirms payout to customer (WIN_CLEAR)
-  // -----------------------------------------
-  @Post('winning/confirm')
+  // Agent confirms payout to customer (WIN_SETTLEMENT_AGENT_TO_USER)
+  @Post('agent/win/settle-to-user')
   @UseGuards(JwtAuthGuard)
   confirmWinning(@Req() req, @Body() dto: ConfirmWinningDto) {
-    return this.walletService.confirmWinClear(
-      req.user.userId,  // agent
+    return this.walletService.winningSettlementToUser(
+      req.user.userId,
       dto.amount,
       dto.transId,
       dto.proofUrl,
@@ -119,18 +106,36 @@ export class WalletController {
     );
   }
 
-  // -----------------------------------------
   // Admin processes agent withdraw (deduct balance)
-  // -----------------------------------------
   @Post('admin/withdraw')
   @UseGuards(JwtAuthGuard, AdminGuard)
   adminWithdraw(@Req() req, @Body() dto: any) {
     return this.walletService.adminProcessWithdraw(
-      req.user.userId,   // admin
-      dto.agentId,        // agent
+      req.user.userId,
+      dto.agentId,
       dto.amount,
       dto.transId,
       dto.note,
     );
+  }
+
+  // Admin: list pending deposit requests
+  @Get('admin/deposits/pending')
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  getPendingDeposits() {
+    return this.walletService.getPendingDeposits();
+  }
+
+  // Admin: commission summary
+  @Get('admin/commission/summary')
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  commissionSummary() {
+    return this.walletService.getCommissionSummary();
+  }
+
+  @Get('admin/winning/pending')
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  getAdminPendingWinning() {
+    return this.walletService.getPendingWinningSettlements();
   }
 }

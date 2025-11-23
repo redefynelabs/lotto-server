@@ -1,16 +1,10 @@
-import {
-  Controller,
-  Get,
-  Patch,
-  Body,
-  UseGuards,
-  Param,
-} from '@nestjs/common';
+import { Controller, Get, Patch, Body, UseGuards, Param } from '@nestjs/common';
 import { UserService } from './user.service';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AdminGuard } from '../auth/guards/admin.guard';
 import { GetUser } from 'src/common/decorators/get-user.decorator';
+import { UpdateCommissionDto } from './dto/update-commision.dto';
 
 @Controller('user')
 export class UserController {
@@ -37,6 +31,7 @@ export class UserController {
     return this.userService.updateMyProfile(userId, dto);
   }
 
+  
   // ------------------------------
   // User: My Wallet
   // ------------------------------
@@ -80,5 +75,14 @@ export class UserController {
   @Patch('admin/agents/:id/approve')
   approveAgent(@Param('id') userId: string) {
     return this.userService.approveAgent(userId);
+  }
+
+  @Patch('/admin/agents/:id/commission')
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  async updateAgentCommission(
+    @Param('id') userId: string,
+    @Body() dto: UpdateCommissionDto,
+  ) {
+    return this.userService.updateAgentCommission(userId, dto.commissionPct);
   }
 }

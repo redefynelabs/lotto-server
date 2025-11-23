@@ -1,4 +1,4 @@
-import { IsNumber, IsString } from 'class-validator';
+import { IsNumber, IsOptional, IsString } from 'class-validator';
 
 export class AdminPayDto {
   @IsString()
@@ -11,5 +11,6 @@ export class AdminPayDto {
   transId: string;
 
   @IsString()
-  note: string;
+  @IsOptional()
+  note?: string;
 }

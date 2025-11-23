@@ -38,6 +38,11 @@ export class SlotController {
     return this.slotService.generateFutureSlots();
   }
 
+  @Get('grouped-by-date')
+  async getSlotsGroupedByDate() {
+    return this.slotService.getSlotsGroupedByMalaysiaDate();
+  }
+
   // Public: get all slots
   @Get('all')
   getAll() {
@@ -58,5 +63,4 @@ export class SlotController {
   getActiveJp() {
     return this.slotService.getActiveJpSlots();
   }
-
 }

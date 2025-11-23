@@ -57,11 +57,46 @@ export class UserService {
     });
   }
 
+  
+
   // -------------------------------------------------------
   // User: Get my wallet balance
   // -------------------------------------------------------
   async getMyWallet(userId: string) {
     return this.walletService.getWalletBalance(userId);
+  }
+
+  // -------------------------------------------------------
+  // Admin: Update Agent Commission Percentage
+  // -------------------------------------------------------
+  async updateAgentCommission(userId: string, commissionPct: number) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) throw new NotFoundException('User not found');
+
+    if (user.role !== Role.AGENT) {
+      throw new BadRequestException('Only agents can have commission updated');
+    }
+
+    if (!user.isApproved) {
+      throw new BadRequestException(
+        'Agent must be approved before updating commission',
+      );
+    }
+
+    return this.prisma.user.update({
+      where: { id: userId },
+      data: { commissionPct },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        commissionPct: true,
+        isApproved: true,
+      },
+    });
   }
 
   // -------------------------------------------------------

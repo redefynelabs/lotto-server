@@ -67,6 +67,13 @@ export class AuthService {
       },
     });
 
+    // Ensure wallets are created if missing
+    await this.prisma.wallet.upsert({
+      where: { userId: user.id },
+      update: {},
+      create: { userId: user.id },
+    });
+
     // TODO: send SMS OTP
 
     return { message: 'OTP sent', userId: user.id };
@@ -112,13 +119,6 @@ export class AuthService {
       data: {
         isApproved: true,
       },
-    });
-
-    // Ensure wallets are created if missing
-    await this.prisma.wallet.upsert({
-      where: { userId: dto.agentId },
-      update: {},
-      create: { userId: dto.agentId },
     });
 
     return {
@@ -167,4 +167,5 @@ export class AuthService {
       },
     };
   }
+  
 }
