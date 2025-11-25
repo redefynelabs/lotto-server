@@ -10,17 +10,21 @@ COPY package*.json ./
 # Install dependencies
 RUN npm install
 
-# Copy everything
+# Copy source code
 COPY . .
 
 # Generate Prisma client
 RUN npx prisma generate
 
-# Build NestJS
+# Run Prisma migrations (DB schema update)
+RUN echo "Running Prisma Migrate Deploy..." \
+  && npx prisma migrate deploy
+
+# Build NestJS project
 RUN npm run build
 
-# Expose API port
+# Expose port
 EXPOSE 5000
 
-# Run server
+# Start production server
 CMD ["npm", "run", "start:prod"]
