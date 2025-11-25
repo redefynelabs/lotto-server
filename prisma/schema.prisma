@@ -152,6 +152,7 @@ model Slot {
 
   bids       Bid[]
   drawResult DrawResult?
+  results    Result[]
 
   @@index([slotTime, type])
 }
@@ -202,4 +203,20 @@ model DrawResult {
   createdAt DateTime @default(now())
 
   @@index([slotId])
+}
+
+model Result {
+  id           String   @id @default(cuid())
+  slotId       String
+  uniqueSlotId String?
+  type         String   // "LD" or "JP"
+  winner       String   // ← ONLY THIS: "45" or "03-12-15-22-28-31"
+  resultDate   DateTime
+  slotTime     DateTime
+
+  slot         Slot     @relation(fields: [slotId], references: [id])
+
+  @@index([resultDate])
+  @@index([type])
+  @@map("results")
 }

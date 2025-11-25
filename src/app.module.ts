@@ -10,6 +10,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { WalletModule } from './wallet/wallet.module';
 import { BiddingModule } from './bidding/bidding.module';
 import { UserModule } from './user/user.module';
+import { ResultsModule } from './results/results.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { UserModule } from './user/user.module';
     WalletModule,
     BiddingModule,
     UserModule,
+    ResultsModule
   ],
   controllers: [AppController],
   providers: [AppService],

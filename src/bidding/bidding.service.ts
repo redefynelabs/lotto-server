@@ -388,6 +388,9 @@ export class BiddingService {
         data: { status: 'COMPLETED' },
       });
 
+
+    
+
       return { message: 'LD result announced', draw };
     }
 
@@ -443,6 +446,8 @@ export class BiddingService {
         data: { status: 'COMPLETED' },
       });
 
+
+    
       return {
         message: 'JP result announced',
         draw,
