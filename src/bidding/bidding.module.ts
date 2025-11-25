@@ -2,15 +2,15 @@ import { Module } from '@nestjs/common';
 import { BiddingService } from './bidding.service';
 import { BiddingController } from './bidding.controller';
 import { PrismaService } from '../prisma/prisma.service';
-import { WalletService } from '../wallet/wallet.service';
+import { WalletModule } from '../wallet/wallet.module';
 
 @Module({
+  imports: [WalletModule],      
   controllers: [BiddingController],
   providers: [
     BiddingService,
     PrismaService,
-    WalletService,
   ],
-  exports: [BiddingService],
+  exports: [BiddingService],    
 })
 export class BiddingModule {}
