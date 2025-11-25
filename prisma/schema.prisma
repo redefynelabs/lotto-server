@@ -63,6 +63,7 @@ model AppSettings {
 
   defaultCommissionPct   Decimal  @default(10)
   agentNegativeBalanceLimt  Decimal @default(200)
+  minProfitPct           Decimal  @default(15)
 
   bidPrizeLD             Decimal  @default(1)
   bidPrizeJP             Decimal  @default(5)

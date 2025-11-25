@@ -9,7 +9,6 @@ export class SlotCronService {
   constructor(private readonly slotService: SlotService) {}
 
   // 1. Auto-close slots when bidding window ends (every minute)
-  // Runs in UTC but closes based on windowCloseAt (which is stored in UTC)
   @Cron('0 * * * * *', {
     name: 'close-expired-slots-every-minute',
     timeZone: 'UTC',
@@ -25,13 +24,29 @@ export class SlotCronService {
     }
   }
 
-  // 2. Generate future slots every day at 00:05 AM Malaysia Time
+  // 2. Auto-announce results for closed slots where admin didn't pick (every minute)
+  @Cron('30 * * * * *', {
+    name: 'auto-announce-closed-slots-every-minute',
+    timeZone: 'UTC',
+  })
+  async handleAutoAnnounce() {
+    try {
+      const processed = await this.slotService.autoAnnounceResultsForClosedSlots();
+      if (processed && processed.length > 0) {
+        this.logger.log(`Auto-announced ${processed.length} slot(s): ${processed.join(', ')}`);
+      }
+    } catch (error) {
+      this.logger.error('Auto-announce cron failed', error.stack ?? error);
+    }
+  }
+
+  // 3. Generate future slots every day at 00:05 AM Malaysia Time
   @Cron('0 5 0 * * *', {
     name: 'generate-future-slots-malaysia',
     timeZone: 'Asia/Kuala_Lumpur',
   })
   async handleDailySlotGeneration() {
-    this.logger.log('Malaysia 00:05 AM - Starting daily slot generation (7-day rolling)');
+    this.logger.log('Malaysia 00:05 AM - Starting daily slot generation (rolling)');
 
     try {
       const result = await this.slotService.generateFutureSlots();
@@ -41,7 +56,7 @@ export class SlotCronService {
     }
   }
 
-  // 3. Run once on app startup (critical for reliability)
+  // 4. Run once on app startup
   @Timeout(10_000) // 10 seconds after startup
   async runStartupTasks() {
     this.logger.log('App started - Running startup slot maintenance...');
@@ -50,8 +65,11 @@ export class SlotCronService {
       // Close any slots that should’ve been closed while server was down
       await this.handleSlotAutoClosing();
 
-      // Ensure we have 7 days of open slots right now
+      // Ensure future slots exist
       await this.handleDailySlotGeneration();
+
+      // Try auto-announce in case any closed slots missed
+      await this.handleAutoAnnounce();
 
       this.logger.log('Startup slot maintenance completed successfully');
     } catch (error) {

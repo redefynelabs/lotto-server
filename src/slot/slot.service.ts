@@ -7,6 +7,7 @@ import { SettingsService } from '../settings/settings.service';
 import { generateSlotId } from '../utils/generate-slot-id.util';
 import { getMalaysiaDate, MYT, toUTCDate } from 'src/utils/timezone.util';
 import { DateTime } from 'luxon';
+import { BiddingService } from 'src/bidding/bidding.service';
 
 @Injectable()
 export class SlotService {
@@ -15,6 +16,7 @@ export class SlotService {
   constructor(
     private prisma: PrismaService,
     private settingsService: SettingsService,
+    private biddingService: BiddingService, 
   ) {}
 
   // -------------------------
@@ -353,4 +355,310 @@ export class SlotService {
       orderBy: { slotTime: 'asc' },
     });
   }
+
+  /**
+   * Auto-announce results for closed slots where admin didn't pick a result.
+   * Returns array of slot ids that were auto-announced.
+   */
+  async autoAnnounceResultsForClosedSlots(): Promise<string[]> {
+    const now = new Date();
+
+    // Find slots that are CLOSED, whose slotTime <= now (result time passed),
+    // and that do not have a drawResult yet.
+    const closedSlots = await this.prisma.slot.findMany({
+      where: {
+        status: SlotStatus.CLOSED,
+        slotTime: { lte: now },
+      },
+      orderBy: { slotTime: 'asc' },
+    });
+
+    const processedSlots: string[] = [];
+
+    for (const slot of closedSlots) {
+      // skip if already has draw result
+      const existingDraw = await this.prisma.drawResult.findUnique({
+        where: { slotId: slot.id },
+      });
+      if (existingDraw) continue;
+
+      try {
+        this.logger.log(`Auto-announcing slot ${slot.id} (${slot.type} ${slot.slotTime.toISOString()})`);
+
+        if (slot.type === SlotType.LD) {
+          await this.autoAnnounceLD(slot.id);
+        } else {
+          await this.autoAnnounceJP(slot.id);
+        }
+
+        processedSlots.push(slot.id);
+      } catch (err) {
+        this.logger.error(`Failed to auto-announce slot ${slot.id}`, err.stack ?? err);
+        // continue with other slots
+      }
+    }
+
+    return processedSlots;
+  }
+
+  // ---------
+  // AUTO ANNOUNCE LD
+  // ---------
+  private async autoAnnounceLD(slotId: string) {
+    // Load settings
+    const settings = await this.settingsService.getSettings();
+    if (!settings) {
+      throw new BadRequestException('App settings not configured');
+    }
+
+    const W = Number(settings.winningPrizeLD ?? 0);
+    const minProfitPct = Number(settings.minProfitPct ?? 0.15);
+    const maxBidLimitPerNumber = Number(settings.ldBidLimitPerNumber ?? 120);
+
+    // total collected for the slot
+    const aggCollected = await this.prisma.bid.aggregate({
+      where: { slotId },
+      _sum: { amount: true },
+    });
+    const C = aggCollected._sum?.amount ? Number(aggCollected._sum.amount) : 0;
+    const M = Number((C - C * minProfitPct).toFixed(2));
+
+    // compute units grouped by number (all numbers 1..37)
+    const perNumber = await this.prisma.bid.groupBy({
+      by: ['number'],
+      where: { slotId },
+      _sum: { count: true },
+    });
+
+    // build map number -> units
+    const unitsMap = new Map<number, number>();
+    for (const r of perNumber) {
+      const units = r._sum?.count ? Number(r._sum.count) : 0;
+      unitsMap.set(Number(r.number), units);
+    }
+
+    // ensure all numbers 1..37 present (those without bids => 0)
+    for (let n = 1; n <= 37; n++) {
+      if (!unitsMap.has(n)) unitsMap.set(n, 0);
+    }
+
+    // sort by units asc and pick 5 least-bid numbers
+    const candidates = [...unitsMap.entries()]
+      .sort((a, b) => a[1] - b[1] || a[0] - b[0]) // by units then number
+      .slice(0, 5);
+
+    // Evaluate each candidate to compute payoutToReal (using same math as announceResult)
+    type Eval = {
+      number: number;
+      realUnits: number;
+      dummyUnits: number;
+      unitPrize: number;
+      payoutToReal: number;
+      scaledPayoutUsed: boolean;
+      profit: number;
+    };
+
+    const evaluations: Eval[] = [];
+
+    for (const [num, realUnits] of candidates) {
+      const R = realUnits;
+      let dummyUnits = 0;
+      let unitPrize = 0;
+      let payoutToReal = 0;
+      let scaledPayoutUsed = false;
+
+      if (R > 0) {
+        if (M <= 0) {
+          // no money to pay winners
+          unitPrize = 0;
+          payoutToReal = 0;
+          dummyUnits = 0;
+          scaledPayoutUsed = true;
+        } else {
+          const numerator = W * R;
+          const neededD = Math.ceil(numerator / M - R);
+          dummyUnits = Math.max(0, neededD);
+
+          if (R + dummyUnits > maxBidLimitPerNumber) {
+            // fallback: scaled payout
+            dummyUnits = 0;
+            unitPrize = Number((M / R).toFixed(2));
+            payoutToReal = Number((unitPrize * R).toFixed(2));
+            scaledPayoutUsed = true;
+          } else {
+            unitPrize = Number((W / (R + dummyUnits)).toFixed(2));
+            payoutToReal = Number((unitPrize * R).toFixed(2));
+          }
+        }
+      } else {
+        // no real winners - cosmetic dummy units (clamped to limit)
+        const minDisplay = 20;
+        const maxDisplay = 50;
+        const chosen = Math.floor(Math.random() * (maxDisplay - minDisplay + 1)) + minDisplay;
+        dummyUnits = Math.ceil(W / chosen);
+        if (dummyUnits > maxBidLimitPerNumber) dummyUnits = maxBidLimitPerNumber;
+        unitPrize = Number((W / dummyUnits).toFixed(2));
+        payoutToReal = 0;
+      }
+
+      const profit = Number((C - payoutToReal).toFixed(2));
+      evaluations.push({
+        number: num,
+        realUnits: R,
+        dummyUnits,
+        unitPrize,
+        payoutToReal,
+        scaledPayoutUsed,
+        profit,
+      });
+    }
+
+    // pick candidate with max profit
+    evaluations.sort((a, b) => b.profit - a.profit || a.realUnits - b.realUnits);
+    const best = evaluations[0];
+    if (!best) {
+      this.logger.warn(`No candidate found for slot ${slotId} (LD). Skipping auto-announce.`);
+      return;
+    }
+
+    this.logger.log(
+      `Auto-announce LD slot ${slotId}: chosen number=${best.number}, real=${best.realUnits}, dummy=${best.dummyUnits}, unitPrize=${best.unitPrize}, payout=${best.payoutToReal}, profit=${best.profit}`,
+    );
+
+    // call the central announceResult to persist everything
+    await this.biddingService.announceResult('SYSTEM', {
+      slotId,
+      winningNumber: best.number,
+      note: 'AUTO: picked from 5 least-bid numbers',
+    } as any); // cast to match AnnounceResultDto shape
+  }
+
+  // ---------
+  // AUTO ANNOUNCE JP
+  // ---------
+  private async autoAnnounceJP(slotId: string) {
+    const settings = await this.settingsService.getSettings();
+    if (!settings) throw new BadRequestException('App settings not configured');
+
+    const W = Number(settings.winningPrizeJP ?? 0);
+    const minProfitPct = Number(settings.minProfitPct ?? 0.15);
+
+    // total collected for slot
+    const aggCollected = await this.prisma.bid.aggregate({
+      where: { slotId },
+      _sum: { amount: true },
+    });
+    const C = aggCollected._sum?.amount ? Number(aggCollected._sum.amount) : 0;
+    const M = Number((C - C * minProfitPct).toFixed(2));
+
+    // fetch all bids and build combo counts (normalized sorted combo string)
+    const bids = await this.prisma.bid.findMany({
+      where: { slotId },
+      select: { jpNumbers: true },
+    });
+
+    const comboMap = new Map<string, number>();
+    for (const b of bids) {
+      if (!b.jpNumbers || b.jpNumbers.length !== 6) continue;
+      const key = [...b.jpNumbers].map(Number).sort((a, b) => a - b).join(',');
+      comboMap.set(key, (comboMap.get(key) || 0) + 1);
+    }
+
+    // if no combos present, we can choose 5 random combos (or pick 5 least-used - all zero)
+    const combosArray = [...comboMap.entries()].map(([k, v]) => ({ k, v }));
+    // if fewer than 5 combos, we can generate filler random combos (optional). For now we use existing combos and if none exist we pick 5 random combos.
+    const candidateCombos: { combo: string; count: number }[] = [];
+
+    if (combosArray.length === 0) {
+      // generate 5 random combos (order-insensitive)
+      for (let i = 0; i < 5; i++) {
+        const combo = new Set<number>();
+        while (combo.size < 6) combo.add(Math.floor(Math.random() * 37) + 1);
+        const arr = [...combo].sort((a, b) => a - b);
+        candidateCombos.push({ combo: arr.join(','), count: 0 });
+      }
+    } else {
+      combosArray.sort((a, b) => a.v - b.v);
+      for (let i = 0; i < Math.min(5, combosArray.length); i++) {
+        candidateCombos.push({ combo: combosArray[i].k, count: combosArray[i].v });
+      }
+      // if less than 5, fill with random combos
+      while (candidateCombos.length < 5) {
+        const combo = new Set<number>();
+        while (combo.size < 6) combo.add(Math.floor(Math.random() * 37) + 1);
+        const arr = [...combo].sort((a, b) => a - b);
+        candidateCombos.push({ combo: arr.join(','), count: 0 });
+      }
+    }
+
+    type EvalJP = {
+      combo: string;
+      realUnits: number;
+      dummyUnits: number;
+      unitPrize: number;
+      payoutToReal: number;
+      profit: number;
+    };
+
+    const evals: EvalJP[] = [];
+
+    for (const c of candidateCombos) {
+      const R = c.count;
+      let dummyUnits = 0;
+      let unitPrize = 0;
+      let payoutToReal = 0;
+
+      if (R > 0) {
+        if (M <= 0) {
+          unitPrize = 0;
+          payoutToReal = 0;
+          dummyUnits = 0;
+        } else {
+          const numerator = W * R;
+          const neededD = Math.ceil(numerator / M - R);
+          dummyUnits = Math.max(0, neededD);
+          // JP has no per-number cap, so always OK
+          unitPrize = Number((W / (R + dummyUnits)).toFixed(2));
+          payoutToReal = Number((unitPrize * R).toFixed(2));
+        }
+      } else {
+        // R == 0 cosmetic
+        const minDisplay = 20;
+        const maxDisplay = 50;
+        const chosen = Math.floor(Math.random() * (maxDisplay - minDisplay + 1)) + minDisplay;
+        dummyUnits = Math.ceil(W / chosen);
+        unitPrize = Number((W / dummyUnits).toFixed(2));
+        payoutToReal = 0;
+      }
+
+      const profit = Number((C - payoutToReal).toFixed(2));
+      evals.push({
+        combo: c.combo,
+        realUnits: R,
+        dummyUnits,
+        unitPrize,
+        payoutToReal,
+        profit,
+      });
+    }
+
+    evals.sort((a, b) => b.profit - a.profit || a.realUnits - b.realUnits);
+    const best = evals[0];
+    if (!best) {
+      this.logger.warn(`No JP candidate found for slot ${slotId}. Skipping auto-announce.`);
+      return;
+    }
+
+    this.logger.log(
+      `Auto-announce JP slot ${slotId}: chosen combo=${best.combo}, real=${best.realUnits}, dummy=${best.dummyUnits}, unitPrize=${best.unitPrize}, payout=${best.payoutToReal}, profit=${best.profit}`,
+    );
+
+    // call announceResult with winningCombo as dashed string
+    await this.biddingService.announceResult('SYSTEM', {
+      slotId,
+      winningCombo: best.combo.split(',').join('-'),
+      note: 'AUTO: picked from 5 least-bid combos',
+    } as any);
+  }
+
 }

@@ -279,179 +279,241 @@ export class BiddingService {
     const slot = await this.prisma.slot.findUnique({
       where: { id: dto.slotId },
     });
-    if (!slot) throw new NotFoundException('Slot not found');
 
-    if (slot.status !== 'OPEN' && slot.status !== 'CLOSED') {
+    if (!slot) throw new NotFoundException('Slot not found');
+    if (slot.status === 'COMPLETED')
+      throw new BadRequestException('Result already announced');
+
+    if (slot.status === 'OPEN' && new Date() < new Date(slot.windowCloseAt)) {
       throw new BadRequestException(
-        'Slot is not in a valid state for announcing result',
+        'Cannot announce result before bidding window closes',
       );
     }
 
-    // fetch settings
+    // ------------------------
+    // Load app settings
+    // ------------------------
     const settings = await this.prisma.appSettings.findFirst();
     if (!settings) throw new BadRequestException('App settings not configured');
 
+    // use DB value or default 15% if not present
+    const minProfitPct = Number(settings.minProfitPct ?? 0.15);
+
+    const maxPerNumber = Number(settings.ldBidLimitPerNumber ?? 120);
+
+    // sum total amount collected for slot
+    const aggCollected = await this.prisma.bid.aggregate({
+      where: { slotId: slot.id },
+      _sum: { amount: true },
+    });
+    const collected = Number(aggCollected._sum.amount ?? 0);
+
+    // profit threshold
+    const minProfit = Number((collected * minProfitPct).toFixed(2));
+    const maxAllowedPayout = Number((collected - minProfit).toFixed(2));
+
+    // ------------------------------------
+    // Helper: save draw result
+    // ------------------------------------
+    const saveDraw = async (params: {
+      winner: string;
+      dummyUnits: number;
+      totalUnits: number;
+      unitPrize: number;
+      payoutTotal: number;
+      meta?: any;
+    }) => {
+      const draw = await this.prisma.drawResult.create({
+        data: {
+          slotId: slot.id,
+          winner: params.winner,
+          dummyUnits: params.dummyUnits,
+          totalUnits: params.totalUnits,
+          perUnitPayout: params.unitPrize,
+          payoutTotal: params.payoutTotal,
+          meta: {
+            adminId,
+            collected,
+            minProfitPct,
+            maxAllowedPayout,
+            ...(params.meta ?? {}),
+          },
+        },
+      });
+
+      await this.prisma.slot.update({
+        where: { id: slot.id },
+        data: { status: 'COMPLETED' },
+      });
+
+      return draw;
+    };
+
+    // ===============================================================
+    // ======================= LUCKY DRAW =============================
+    // ===============================================================
     if (slot.type === 'LD') {
+      const W = Number(settings.winningPrizeLD ?? 0);
+
       if (dto.winningNumber == null)
         throw new BadRequestException('winningNumber required for LD');
 
       const winningNumber = dto.winningNumber;
 
-      // total units bid on winning number (real units)
+      // count real units
       const aggUnits = await this.prisma.bid.aggregate({
         _sum: { count: true },
         where: { slotId: slot.id, number: winningNumber },
       });
-      const realUnits = aggUnits._sum?.count ? Number(aggUnits._sum.count) : 0;
 
-      // total collected for the slot (all bids amount)
-      const aggCollected = await this.prisma.bid.aggregate({
-        _sum: { amount: true },
-        where: { slotId: slot.id },
-      });
-      const collectedTotal = aggCollected._sum?.amount
-        ? Number(aggCollected._sum.amount)
-        : 0;
+      const R = Number(aggUnits._sum.count ?? 0);
 
-      // winning prize (single winning pool)
-      const winningPrize = Number(settings.winningPrizeLD);
-
-      // Loss prevention: find smallest dummyUnits (0..(80-realUnits)) so that:
-      // payoutToReal = (winningPrize / (realUnits + dummyUnits)) * realUnits <= collectedTotal
-      // if realUnits == 0 -> no real winners, we still may need to reserve nothing.
       let dummyUnits = 0;
       let unitPrize = 0;
       let payoutToReal = 0;
-      const maxUnitsPerNumber = 80;
+      let scaled = false;
 
-      if (realUnits > 0) {
-        const maxDummy = Math.max(0, maxUnitsPerNumber - realUnits);
-        let found = false;
-        for (let d = 0; d <= maxDummy; d++) {
-          const totalUnits = realUnits + d;
-          const candidateUnitPrize = winningPrize / totalUnits;
-          const candidatePayoutToReal = candidateUnitPrize * realUnits;
-          if (candidatePayoutToReal <= collectedTotal) {
-            dummyUnits = d;
-            unitPrize = candidateUnitPrize;
-            payoutToReal = candidatePayoutToReal;
-            found = true;
-            break;
+      if (R > 0) {
+        const M = maxAllowedPayout;
+
+        if (M <= 0) {
+          // no money to pay winners
+          dummyUnits = 0;
+          unitPrize = 0;
+          payoutToReal = 0;
+          scaled = true;
+        } else {
+          const D = Math.ceil((W * R) / M - R);
+          dummyUnits = Math.max(0, D);
+
+          if (R + dummyUnits > maxPerNumber) {
+            // fallback → scale payout
+            dummyUnits = 0;
+            unitPrize = Number((M / R).toFixed(2));
+            payoutToReal = Number((unitPrize * R).toFixed(2));
+            scaled = true;
+          } else {
+            // normal dummy method
+            unitPrize = Number((W / (R + dummyUnits)).toFixed(2));
+            payoutToReal = Number((unitPrize * R).toFixed(2));
           }
         }
-        if (!found) {
-          // if we couldn't make company profitable by adding dummy units, choose d = maxDummy and compute unit
-          dummyUnits = maxDummy;
-          unitPrize = winningPrize / (realUnits + dummyUnits);
-          payoutToReal = unitPrize * realUnits;
-        }
       } else {
-        // no real winners -> nothing to reserve. still record the draw result
-        dummyUnits = 0;
-        unitPrize = 0;
+        // No real winners → cosmetic dummy winners
+        const p = Math.floor(Math.random() * (50 - 20 + 1)) + 20;
+        dummyUnits = Math.ceil(W / p);
+
+        if (dummyUnits > maxPerNumber) dummyUnits = maxPerNumber;
+
+        unitPrize = Number((W / dummyUnits).toFixed(2));
         payoutToReal = 0;
       }
 
-      // record DrawResult
-      const draw = await this.prisma.drawResult.create({
-        data: {
-          slotId: slot.id,
-          winner: String(winningNumber),
-          dummyUnits,
-          totalUnits: realUnits + dummyUnits,
-          perUnitPayout: unitPrize,
-          payoutTotal: payoutToReal,
-          meta: { adminId, note: dto.note },
-        },
+      // save result
+      const draw = await saveDraw({
+        winner: String(winningNumber),
+        dummyUnits,
+        totalUnits: R + dummyUnits,
+        unitPrize,
+        payoutTotal: payoutToReal,
+        meta: { scaled, mode: 'LD' },
       });
 
-      // for each winning bid, compute actual payout = unitPrize * bid.count
-      if (realUnits > 0) {
+      // credit winning payouts
+      if (R > 0 && payoutToReal > 0) {
         const winningBids = await this.prisma.bid.findMany({
           where: { slotId: slot.id, number: winningNumber },
         });
 
         for (const b of winningBids) {
-          const payout = Number((unitPrize * Number(b.count)).toFixed(2));
-          // Reserve the payout for the agent (WIN_CREDIT => reserve)
+          const payout = Number((unitPrize * b.count).toFixed(2));
           await this.walletService.creditWinning(b.userId, payout, {
             slotId: slot.id,
             bidId: b.id,
-            number: winningNumber,
           });
         }
       }
 
-      // mark slot completed
-      await this.prisma.slot.update({
-        where: { id: slot.id },
-        data: { status: 'COMPLETED' },
-      });
-
-
-    
-
-      return { message: 'LD result announced', draw };
+      return {
+        message: 'LD result announced',
+        draw,
+      };
     }
 
-    // ----------------------------
-    // JP announce logic
-    // ----------------------------
+    // ===============================================================
+    // ======================= JACKPOT ================================
+    // ===============================================================
     if (slot.type === 'JP') {
       if (!dto.winningCombo)
         throw new BadRequestException('winningCombo required for JP');
-      const winningCombo = this.parseComboString(dto.winningCombo);
-      if (winningCombo.length !== 6)
-        throw new BadRequestException('winningCombo must have 6 numbers');
 
-      // find matching bids
+      const winningCombo = this.parseComboString(dto.winningCombo);
+
+      if (winningCombo.length !== 6)
+        throw new BadRequestException('Winning combo must have 6 numbers');
+
       const allBids = await this.prisma.bid.findMany({
         where: { slotId: slot.id },
       });
 
-      // iterate to find exact matches
       const winners = allBids.filter((b) => {
-        if (!b.jpNumbers || b.jpNumbers.length !== 6) return false;
-        // exact match order-sensitive? You said "combo matches" — we'll do order-insensitive match (sort both)
-        const a = [...b.jpNumbers].map(Number).sort((x, y) => x - y);
-        const w = [...winningCombo].map(Number).sort((x, y) => x - y);
+        const a = [...b.jpNumbers].sort((x, y) => x - y);
+        const w = [...winningCombo].sort((x, y) => x - y);
         return a.join(',') === w.join(',');
       });
 
-      // record draw result (store winner as normalized string)
-      const draw = await this.prisma.drawResult.create({
-        data: {
-          slotId: slot.id,
-          winner: winningCombo.join('-'),
-          dummyUnits: 0,
-          totalUnits: winners.length,
-          perUnitPayout: Number(settings.winningPrizeJP) || 0,
-          payoutTotal: winners.length * Number(settings.winningPrizeJP),
-          meta: { adminId, note: dto.note },
-        },
-      });
+      const R = winners.length;
+      const W = Number(settings.winningPrizeJP ?? 0);
+      const M = maxAllowedPayout;
 
-      // for each winner reserve the winning amount (for JP it's whole winningPrizeJP per win)
-      for (const w of winners) {
-        const payout = Number(settings.winningPrizeJP);
-        await this.walletService.creditWinning(w.userId, payout, {
-          slotId: slot.id,
-          bidId: w.id,
-          jpNumbers: w.jpNumbers,
-        });
+      let dummyUnits = 0;
+      let unitPrize = 0;
+      let payoutToReal = 0;
+      let scaled = false;
+
+      if (R > 0) {
+        if (M <= 0) {
+          dummyUnits = 0;
+          unitPrize = 0;
+          payoutToReal = 0;
+          scaled = true;
+        } else {
+          const D = Math.ceil((W * R) / M - R);
+          dummyUnits = Math.max(0, D);
+
+          unitPrize = Number((W / (R + dummyUnits)).toFixed(2));
+          payoutToReal = Number((unitPrize * R).toFixed(2));
+        }
+      } else {
+        // Cosmetic dummy winners
+        const p = Math.floor(Math.random() * (50 - 20 + 1)) + 20;
+        dummyUnits = Math.ceil(W / p);
+        unitPrize = Number((W / dummyUnits).toFixed(2));
+        payoutToReal = 0;
       }
 
-      await this.prisma.slot.update({
-        where: { id: slot.id },
-        data: { status: 'COMPLETED' },
+      const draw = await saveDraw({
+        winner: winningCombo.join('-'),
+        dummyUnits,
+        totalUnits: R + dummyUnits,
+        unitPrize,
+        payoutTotal: payoutToReal,
+        meta: { scaled, mode: 'JP' },
       });
 
+      if (R > 0 && payoutToReal > 0) {
+        for (const b of winners) {
+          const payout = Number(unitPrize.toFixed(2)); // JP is per-ticket = 1 unit
+          await this.walletService.creditWinning(b.userId, payout, {
+            slotId: slot.id,
+            bidId: b.id,
+          });
+        }
+      }
 
-    
       return {
         message: 'JP result announced',
         draw,
-        winnersCount: winners.length,
       };
     }
 
