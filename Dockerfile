@@ -16,10 +16,6 @@ COPY . .
 # Generate Prisma client
 RUN npx prisma generate
 
-# Run Prisma migrations (DB schema update)
-RUN echo "Running Prisma Migrate Deploy..." \
-  && npx prisma migrate deploy
-
 # Build NestJS project
 RUN npm run build
 
