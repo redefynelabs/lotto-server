@@ -7,14 +7,24 @@ import { randomUUID } from 'crypto';
 // Polyfill for Node 18 (Render)
 if (!(global as any).crypto) {
   (global as any).crypto = {
-    randomUUID: randomUUID
+    randomUUID: randomUUID,
   };
 }
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+
+  const allowedOrigins = ['http://localhost:3000', 'https://32-win.vercel.app'];
+
   app.enableCors({
-    origin: 'http://localhost:3000',
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        console.log('❌ CORS blocked origin:', origin);
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true,
