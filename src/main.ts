@@ -2,6 +2,14 @@ import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import cookieParser from 'cookie-parser';
+import { randomUUID } from 'crypto';
+
+// Polyfill for Node 18 (Render)
+if (!(global as any).crypto) {
+  (global as any).crypto = {
+    randomUUID: randomUUID
+  };
+}
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
