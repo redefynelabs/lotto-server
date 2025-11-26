@@ -57,6 +57,11 @@ export class BiddingController {
     return this.biddingService.getBidsBySlot(slotId);
   }
 
+  @Get('summary/:slotId')
+  async getBidSummary(@Param('slotId') slotId: string) {
+    return this.biddingService.getBidSummary(slotId);
+  }
+
   // Admin announces result for slot
   @Post('announce')
   @UseGuards(JwtAuthGuard, AdminGuard)

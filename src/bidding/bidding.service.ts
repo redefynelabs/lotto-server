@@ -273,6 +273,59 @@ export class BiddingService {
     return { items, total, page, pageSize };
   }
 
+  async getBidSummary(slotId: string) {
+    const slot = await this.prisma.slot.findUnique({
+      where: { id: slotId },
+    });
+
+    if (!slot) throw new NotFoundException('Slot not found');
+
+    // LD — Lucky Draw Summary
+    if (slot.type === 'LD') {
+      const numbers = await this.prisma.bid.groupBy({
+        by: ['number'],
+        where: { slotId },
+        _sum: { count: true },
+      });
+
+      return {
+        type: 'LD',
+        summary: numbers.map((n) => ({
+          number: n.number,
+          count: Number(n._sum.count || 0),
+        })),
+        totalUnits: numbers.reduce((a, b) => a + Number(b._sum.count || 0), 0),
+      };
+    }
+
+    // JP — Jackpot Summary
+    if (slot.type === 'JP') {
+      const combos = await this.prisma.bid.findMany({
+        where: { slotId },
+        select: { jpNumbers: true },
+      });
+
+      const map = new Map<string, number>();
+
+      combos.forEach((bid) => {
+        const key = bid.jpNumbers.sort((a, b) => a - b).join('-');
+        map.set(key, (map.get(key) || 0) + 1);
+      });
+
+      return {
+        type: 'JP',
+        summary: Array.from(map.entries()).map(([key, count], i) => ({
+          id: i + 1,
+          numbers: key.split('-').map((n) => Number(n)),
+          count,
+        })),
+        totalUnits: combos.length,
+      };
+    }
+
+    throw new BadRequestException('Invalid slot type');
+  }
+
   // announce result for a slot (admin)
   // This will compute winners, apply loss-prevention for LD, and call walletService.creditWinning(userId, payout, meta)
   async announceResult(adminId: string, dto: AnnounceResultDto) {

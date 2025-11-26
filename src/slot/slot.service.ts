@@ -16,7 +16,7 @@ export class SlotService {
   constructor(
     private prisma: PrismaService,
     private settingsService: SettingsService,
-    private biddingService: BiddingService, 
+    private biddingService: BiddingService,
   ) {}
 
   // -------------------------
@@ -310,8 +310,29 @@ export class SlotService {
   // Public: get all slots
   // -------------------------
   async getAllSlots() {
-    return this.prisma.slot.findMany({
+    const slots = await this.prisma.slot.findMany({
       orderBy: { slotTime: 'asc' },
+      include: {
+        bids: true, // We need all bids to calculate totals
+      },
+    });
+
+    return slots.map((slot) => {
+      let totalUnits = 0;
+
+      if (slot.type === 'LD') {
+        // LD: add the count field
+        totalUnits = slot.bids.reduce((sum, b) => sum + b.count, 0);
+      } else {
+        // JP: each bid has jpNumbers (array)
+        // You decide rule → here 1 bid = 1 unit
+        totalUnits = slot.bids.length;
+      }
+
+      return {
+        ...slot,
+        totalUnits,
+      };
     });
   }
 
@@ -383,7 +404,9 @@ export class SlotService {
       if (existingDraw) continue;
 
       try {
-        this.logger.log(`Auto-announcing slot ${slot.id} (${slot.type} ${slot.slotTime.toISOString()})`);
+        this.logger.log(
+          `Auto-announcing slot ${slot.id} (${slot.type} ${slot.slotTime.toISOString()})`,
+        );
 
         if (slot.type === SlotType.LD) {
           await this.autoAnnounceLD(slot.id);
@@ -393,7 +416,10 @@ export class SlotService {
 
         processedSlots.push(slot.id);
       } catch (err) {
-        this.logger.error(`Failed to auto-announce slot ${slot.id}`, err.stack ?? err);
+        this.logger.error(
+          `Failed to auto-announce slot ${slot.id}`,
+          err.stack ?? err,
+        );
         // continue with other slots
       }
     }
@@ -494,9 +520,12 @@ export class SlotService {
         // no real winners - cosmetic dummy units (clamped to limit)
         const minDisplay = 20;
         const maxDisplay = 50;
-        const chosen = Math.floor(Math.random() * (maxDisplay - minDisplay + 1)) + minDisplay;
+        const chosen =
+          Math.floor(Math.random() * (maxDisplay - minDisplay + 1)) +
+          minDisplay;
         dummyUnits = Math.ceil(W / chosen);
-        if (dummyUnits > maxBidLimitPerNumber) dummyUnits = maxBidLimitPerNumber;
+        if (dummyUnits > maxBidLimitPerNumber)
+          dummyUnits = maxBidLimitPerNumber;
         unitPrize = Number((W / dummyUnits).toFixed(2));
         payoutToReal = 0;
       }
@@ -514,10 +543,14 @@ export class SlotService {
     }
 
     // pick candidate with max profit
-    evaluations.sort((a, b) => b.profit - a.profit || a.realUnits - b.realUnits);
+    evaluations.sort(
+      (a, b) => b.profit - a.profit || a.realUnits - b.realUnits,
+    );
     const best = evaluations[0];
     if (!best) {
-      this.logger.warn(`No candidate found for slot ${slotId} (LD). Skipping auto-announce.`);
+      this.logger.warn(
+        `No candidate found for slot ${slotId} (LD). Skipping auto-announce.`,
+      );
       return;
     }
 
@@ -560,7 +593,10 @@ export class SlotService {
     const comboMap = new Map<string, number>();
     for (const b of bids) {
       if (!b.jpNumbers || b.jpNumbers.length !== 6) continue;
-      const key = [...b.jpNumbers].map(Number).sort((a, b) => a - b).join(',');
+      const key = [...b.jpNumbers]
+        .map(Number)
+        .sort((a, b) => a - b)
+        .join(',');
       comboMap.set(key, (comboMap.get(key) || 0) + 1);
     }
 
@@ -580,7 +616,10 @@ export class SlotService {
     } else {
       combosArray.sort((a, b) => a.v - b.v);
       for (let i = 0; i < Math.min(5, combosArray.length); i++) {
-        candidateCombos.push({ combo: combosArray[i].k, count: combosArray[i].v });
+        candidateCombos.push({
+          combo: combosArray[i].k,
+          count: combosArray[i].v,
+        });
       }
       // if less than 5, fill with random combos
       while (candidateCombos.length < 5) {
@@ -625,7 +664,9 @@ export class SlotService {
         // R == 0 cosmetic
         const minDisplay = 20;
         const maxDisplay = 50;
-        const chosen = Math.floor(Math.random() * (maxDisplay - minDisplay + 1)) + minDisplay;
+        const chosen =
+          Math.floor(Math.random() * (maxDisplay - minDisplay + 1)) +
+          minDisplay;
         dummyUnits = Math.ceil(W / chosen);
         unitPrize = Number((W / dummyUnits).toFixed(2));
         payoutToReal = 0;
@@ -645,7 +686,9 @@ export class SlotService {
     evals.sort((a, b) => b.profit - a.profit || a.realUnits - b.realUnits);
     const best = evals[0];
     if (!best) {
-      this.logger.warn(`No JP candidate found for slot ${slotId}. Skipping auto-announce.`);
+      this.logger.warn(
+        `No JP candidate found for slot ${slotId}. Skipping auto-announce.`,
+      );
       return;
     }
 
@@ -660,5 +703,4 @@ export class SlotService {
       note: 'AUTO: picked from 5 least-bid combos',
     } as any);
   }
-
 }

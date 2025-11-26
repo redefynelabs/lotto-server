@@ -3,7 +3,7 @@ import { ResultsService } from './results.service';
 
 @Controller('results')
 export class ResultsController {
-  constructor(private readonly resultsService: ResultsService) { }
+  constructor(private readonly resultsService: ResultsService) {}
 
   @Get()
   async getAllResults(
@@ -22,5 +22,10 @@ export class ResultsController {
   @Get(':slotId')
   async getResultBySlotId(@Param('slotId') slotId: string) {
     return this.resultsService.getResultBySlotId(slotId);
+  }
+
+  @Get('history-grouped')
+  async getHistoryGrouped() {
+    return this.resultsService.getHistoryGrouped();
   }
 }
