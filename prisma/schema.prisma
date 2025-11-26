@@ -52,31 +52,30 @@ enum WalletTxType {
 }
 
 model AppSettings {
-  id                     String   @id @default(uuid())
+  id String @id @default(uuid())
 
-  slotAutoGenerateCount  Int      @default(7)
+  slotAutoGenerateCount Int @default(7)
 
   // Default Times 
-  defaultLdTimes         String[]
-  defaultJpTimes         String[] 
-  timezone               String
+  defaultLdTimes String[] @default(["00:00", "12:00", "16:00", "20:00"])
+  defaultJpTimes String[] @default(["00:15"])
+  timezone       String
 
-  defaultCommissionPct   Decimal  @default(10)
-  agentNegativeBalanceLimt  Decimal @default(200)
-  minProfitPct           Decimal  @default(15)
+  defaultCommissionPct     Decimal @default(10)
+  agentNegativeBalanceLimt Decimal @default(200)
+  minProfitPct             Decimal @default(15)
 
-  bidPrizeLD             Decimal  @default(1)
-  bidPrizeJP             Decimal  @default(5)
+  bidPrizeLD Decimal @default(1)
+  bidPrizeJP Decimal @default(3)
 
-  ldBidLimitPerNumber  Decimal  @default(80)
+  ldBidLimitPerNumber Decimal @default(120)
 
-  winningPrizeLD         Decimal  @default(3300)
-  winningPrizeJP         Decimal  @default(10000)
+  winningPrizeLD Decimal @default(3300)
+  winningPrizeJP Decimal @default(80000)
 
-  createdAt              DateTime @default(now())
-  updatedAt              DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
-
 
 model User {
   id   String @id @default(uuid())
@@ -103,37 +102,37 @@ model User {
   updatedAt DateTime @updatedAt
 
   // Relations
-  wallet        Wallet[]
-  bids          Bid[]
+  wallet Wallet[]
+  bids   Bid[]
 }
 
 model Wallet {
-  id              String    @id @default(uuid())
-  user            User      @relation(fields: [userId], references: [id], onDelete: Restrict)
-  userId          String    @unique
+  id     String @id @default(uuid())
+  user   User   @relation(fields: [userId], references: [id], onDelete: Restrict)
+  userId String @unique
 
   // master balance (Decimal)
-  totalBalance    Decimal   @default(0)
+  totalBalance Decimal @default(0)
 
   // locked amount for winnings (not usable for bidding)
-  reservedWinning Decimal   @default(0)
+  reservedWinning Decimal @default(0)
 
-  txs             WalletTx[]
+  txs WalletTx[]
 
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model WalletTx {
-  id            String       @id @default(uuid())
-  wallet        Wallet       @relation(fields: [walletId], references: [id], onDelete: Restrict)
-  walletId      String
+  id       String @id @default(uuid())
+  wallet   Wallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
+  walletId String
 
-  type          WalletTxType
-  amount        Decimal
-  balanceAfter  Decimal
-  meta          Json?        // { transId, proofUrl, slotId, bidId, adminId, note }
-  createdAt     DateTime     @default(now())
+  type         WalletTxType
+  amount       Decimal
+  balanceAfter Decimal
+  meta         Json? // { transId, proofUrl, slotId, bidId, adminId, note }
+  createdAt    DateTime     @default(now())
 
   @@index([walletId])
 }
@@ -160,31 +159,30 @@ model Slot {
 
 /// Only real bids
 model Bid {
-  id            String   @id @default(uuid())
-  user          User     @relation(fields: [userId], references: [id], onDelete: Restrict)
-  userId        String
+  id     String @id @default(uuid())
+  user   User   @relation(fields: [userId], references: [id], onDelete: Restrict)
+  userId String
 
-  slot          Slot     @relation(fields: [slotId], references: [id], onDelete: Restrict)
-  slotId        String
+  slot   Slot   @relation(fields: [slotId], references: [id], onDelete: Restrict)
+  slotId String
 
-  uniqueBidId   String   @unique
+  uniqueBidId   String @unique
   customerName  String
   customerPhone String
 
   // LD fields
-  number        Int
-  count         Int
-  
+  number Int
+  count  Int
+
   // JP fields
-  jpNumbers     Int[]
+  jpNumbers Int[]
 
-  amount        Decimal
+  amount Decimal
 
-  createdAt     DateTime @default(now())
+  createdAt DateTime @default(now())
 
   @@index([slotId])
 }
-
 
 /// Draw result (with dummy metadata only)
 model DrawResult {
@@ -210,12 +208,12 @@ model Result {
   id           String   @id @default(cuid())
   slotId       String
   uniqueSlotId String?
-  type         String   // "LD" or "JP"
-  winner       String   // ← ONLY THIS: "45" or "03-12-15-22-28-31"
+  type         String // "LD" or "JP"
+  winner       String // ← ONLY THIS: "45" or "03-12-15-22-28-31"
   resultDate   DateTime
   slotTime     DateTime
 
-  slot         Slot     @relation(fields: [slotId], references: [id])
+  slot Slot @relation(fields: [slotId], references: [id])
 
   @@index([resultDate])
   @@index([type])

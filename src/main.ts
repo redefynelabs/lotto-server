@@ -14,7 +14,7 @@ if (!(global as any).crypto) {
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  const allowedOrigins = ['http://localhost:3000', 'https://32-win.vercel.app'];
+  const allowedOrigins = ['http://localhost:3000', 'https://32-win.vercel.app', 'https://lotto.redefyne.in'];
 
   app.enableCors({
     origin: (origin, callback) => {
