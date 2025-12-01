@@ -49,19 +49,19 @@ export class AuthController {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       maxAge: 15 * 60 * 1000,
-      sameSite: 'lax',
+      sameSite: 'none',
       path: '/',
     });
     res.cookie('refresh_token', refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       maxAge: 7 * 24 * 60 * 60 * 1000,
-      sameSite: 'lax',
+      sameSite: 'none',
       path: '/',
     });
     res.cookie('app_user', JSON.stringify(user), {
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
+      sameSite: 'none',
       maxAge: 7 * 24 * 60 * 60 * 1000,
       path: '/',
     });
@@ -85,14 +85,14 @@ export class AuthController {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
         maxAge: 15 * 60 * 1000,
-        sameSite: 'lax',
+        sameSite: 'none',
         path: '/',
       });
       res.cookie('refresh_token', refreshToken, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
         maxAge: 7 * 24 * 60 * 60 * 1000,
-        sameSite: 'lax',
+        sameSite: 'none',
         path: '/',
       });
     }
