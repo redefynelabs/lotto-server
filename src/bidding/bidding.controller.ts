@@ -26,14 +26,17 @@ export class BiddingController {
     return this.biddingService.createBid(agentId, dto);
   }
 
-  @Get('remaining')
-  @UseGuards(JwtAuthGuard)
-  async getRemaining(
-    @Query('slotId') slotId: string,
-    @Query('number') number: string,
-  ) {
-    return this.biddingService.getRemainingCount(slotId, Number(number));
-  }
+  
+  // limits removed and route commented
+  
+  // @Get('remaining')
+  // @UseGuards(JwtAuthGuard)
+  // async getRemaining(
+  //   @Query('slotId') slotId: string,
+  //   @Query('number') number: string,
+  // ) {
+  //   return this.biddingService.getRemainingCount(slotId, Number(number));
+  // }
 
   // Agent -> list my bids
   @Get('my')

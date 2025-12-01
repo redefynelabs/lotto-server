@@ -2,7 +2,7 @@ import {
   Injectable,
   BadRequestException,
   NotFoundException,
-  ForbiddenException,
+  Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { WalletService } from '../wallet/wallet.service';
@@ -23,6 +23,8 @@ import { AnnounceResultDto } from './dto/announce-result.dto';
 
 @Injectable()
 export class BiddingService {
+  private readonly logger = new Logger(BiddingService.name);
+
   constructor(
     private prisma: PrismaService,
     private walletService: WalletService,
@@ -57,6 +59,51 @@ export class BiddingService {
       .filter((n) => !Number.isNaN(n));
   }
 
+  private normalizePct(value: any, fallback: number = 15) {
+    const raw = Number(value ?? fallback);
+    const pct = raw > 1 ? raw / 100 : raw;
+    // console.log('DEBUG profitPct:', { raw, normalized: pct });
+    return pct;
+  }
+
+  // Utility: build cosmetic distribution for LD (1..37) or JP combos (optional)
+  private buildCosmeticUnitsForLd(
+    realUnitsMap: Map<number, number>,
+    winningNumber: number,
+    realDummyForWinner: number,
+  ) {
+    const cosmetic: Record<number, number> = {};
+
+    // base per-number cosmetic: small + proportion of real
+    for (let n = 1; n <= 37; n++) {
+      const real = realUnitsMap.get(n) ?? 0;
+      const base = Math.floor(Math.random() * 3) + Math.round(real / 3); // 0..2 + real/3
+      cosmetic[n] = Math.max(0, base);
+    }
+
+    // set winning cosmetics: real + realDummy + small boost (0..3)
+    const boost = Math.floor(Math.random() * 4); // 0..3
+    cosmetic[winningNumber] =
+      (realUnitsMap.get(winningNumber) ?? 0) + realDummyForWinner + boost;
+
+    // randomly pick 2..4 other spikes (could exceed winner)
+    const spikeCount = Math.floor(Math.random() * 3) + 2; // 2..4
+    const candidates = Array.from({ length: 37 }, (_, i) => i + 1).filter(
+      (n) => n !== winningNumber,
+    );
+    for (let i = 0; i < spikeCount; i++) {
+      const idx = Math.floor(Math.random() * candidates.length);
+      const sp = candidates.splice(idx, 1)[0];
+      const spikeBoost = Math.floor(Math.random() * 4) + 1; // 1..4
+      cosmetic[sp] = Math.max(
+        cosmetic[sp],
+        cosmetic[winningNumber] + spikeBoost,
+      );
+    }
+
+    return cosmetic;
+  }
+
   // create bid
   async createBid(agentId: string, dto: CreateBidDto) {
     // fetch slot
@@ -86,17 +133,18 @@ export class BiddingService {
 
       // enforce Max bid count max per number across slot
       // compute current units for this slot + number
-      const agg = await this.prisma.bid.aggregate({
-        _sum: { count: true },
-        where: { slotId: dto.slotId, number: dto.number },
-      });
-      const currentUnits = agg._sum?.count ? Number(agg._sum.count) : 0;
-      const maxUnitsPerNumber = Number(settings.ldBidLimitPerNumber);
-      if (currentUnits + dto.count > maxUnitsPerNumber) {
-        throw new BadRequestException(
-          `Max ${maxUnitsPerNumber} units allowed per number in this slot. Remaining: ${Math.max(0, maxUnitsPerNumber - currentUnits)}`,
-        );
-      }
+
+      // const agg = await this.prisma.bid.aggregate({
+      //   _sum: { count: true },
+      //   where: { slotId: dto.slotId, number: dto.number },
+      // });
+      // const currentUnits = agg._sum?.count ? Number(agg._sum.count) : 0;
+      // const maxUnitsPerNumber = Number(settings.ldBidLimitPerNumber);
+      // if (currentUnits + dto.count > maxUnitsPerNumber) {
+      //   throw new BadRequestException(
+      //     `Max ${maxUnitsPerNumber} units allowed per number in this slot. Remaining: ${Math.max(0, maxUnitsPerNumber - currentUnits)}`,
+      //   );
+      // }
 
       // calculate amount
       const amount = Number(settings.bidPrizeLD) * Number(dto.count);
@@ -226,28 +274,28 @@ export class BiddingService {
   }
 
   //get remaining bid count for the number slot wise
-  async getRemainingCount(slotId: string, number: number) {
-    const settings = await this.prisma.appSettings.findFirst();
-    if (!settings) throw new BadRequestException('Settings missing');
+  // async getRemainingCount(slotId: string, number: number) {
+  //   const settings = await this.prisma.appSettings.findFirst();
+  //   if (!settings) throw new BadRequestException('Settings missing');
 
-    const maxCount = Number(settings.ldBidLimitPerNumber); // or make separate config like maxLdCount
+  //   const maxCount = Number(settings.ldBidLimitPerNumber); // or make separate config like maxLdCount
 
-    // total bids so far
-    const total = await this.prisma.bid.aggregate({
-      where: { slotId, number },
-      _sum: { count: true },
-    });
+  //   // total bids so far
+  //   const total = await this.prisma.bid.aggregate({
+  //     where: { slotId, number },
+  //     _sum: { count: true },
+  //   });
 
-    const used = Number(total._sum.count || 0);
-    const remaining = Math.max(maxCount - used, 0);
+  //   const used = Number(total._sum.count || 0);
+  //   const remaining = Math.max(maxCount - used, 0);
 
-    return {
-      number,
-      used,
-      maxCount,
-      remaining,
-    };
-  }
+  //   return {
+  //     number,
+  //     used,
+  //     maxCount,
+  //     remaining,
+  //   };
+  // }
 
   // get bids by slot (admin)
   async getBidsBySlot(slotId: string) {
@@ -261,15 +309,40 @@ export class BiddingService {
   // get agent's bids
   async getMyBids(agentId: string, page = 1, pageSize = 50) {
     const skip = (page - 1) * pageSize;
+
     const [items, total] = await Promise.all([
       this.prisma.bid.findMany({
         where: { userId: agentId },
+        include: {
+          slot: {
+            select: {
+              id: true,
+              type: true,
+              slotTime: true,
+              status: true, 
+              drawResult: {
+                select: {
+                  winner: true,
+                  createdAt: true,
+                },
+              },
+            },
+          },
+          user: {
+            select: {
+              firstName: true,
+              lastName: true,
+              phone: true,
+            },
+          },
+        },
         orderBy: { createdAt: 'desc' },
         skip,
         take: pageSize,
       }),
       this.prisma.bid.count({ where: { userId: agentId } }),
     ]);
+
     return { items, total, page, pageSize };
   }
 
@@ -332,43 +405,32 @@ export class BiddingService {
     const slot = await this.prisma.slot.findUnique({
       where: { id: dto.slotId },
     });
-
     if (!slot) throw new NotFoundException('Slot not found');
     if (slot.status === 'COMPLETED')
       throw new BadRequestException('Result already announced');
-
     if (slot.status === 'OPEN' && new Date() < new Date(slot.windowCloseAt)) {
       throw new BadRequestException(
         'Cannot announce result before bidding window closes',
       );
     }
 
-    // ------------------------
-    // Load app settings
-    // ------------------------
     const settings = await this.prisma.appSettings.findFirst();
     if (!settings) throw new BadRequestException('App settings not configured');
 
-    // use DB value or default 15% if not present
-    const minProfitPct = Number(settings.minProfitPct ?? 0.15);
+    const minProfitPct = this.normalizePct(settings.minProfitPct, 15);
 
-    const maxPerNumber = Number(settings.ldBidLimitPerNumber ?? 120);
-
-    // sum total amount collected for slot
+    // collected
     const aggCollected = await this.prisma.bid.aggregate({
       where: { slotId: slot.id },
       _sum: { amount: true },
     });
     const collected = Number(aggCollected._sum.amount ?? 0);
 
-    // profit threshold
     const minProfit = Number((collected * minProfitPct).toFixed(2));
     const maxAllowedPayout = Number((collected - minProfit).toFixed(2));
 
-    // ------------------------------------
-    // Helper: save draw result
-    // ------------------------------------
-    const saveDraw = async (params: {
+    // helper to persist draw + mark slot completed (called only after successful credits)
+    const persistDraw = async (params: {
       winner: string;
       dummyUnits: number;
       totalUnits: number;
@@ -398,28 +460,36 @@ export class BiddingService {
         where: { id: slot.id },
         data: { status: 'COMPLETED' },
       });
-
       return draw;
     };
 
-    // ===============================================================
-    // ======================= LUCKY DRAW =============================
-    // ===============================================================
+    const M = maxAllowedPayout;
+
+    // ----------------- LD -----------------
     if (slot.type === 'LD') {
       const W = Number(settings.winningPrizeLD ?? 0);
-
       if (dto.winningNumber == null)
         throw new BadRequestException('winningNumber required for LD');
-
       const winningNumber = dto.winningNumber;
 
-      // count real units
+      // real units for winning number
       const aggUnits = await this.prisma.bid.aggregate({
-        _sum: { count: true },
         where: { slotId: slot.id, number: winningNumber },
+        _sum: { count: true },
       });
-
       const R = Number(aggUnits._sum.count ?? 0);
+
+      // build per-number real map for cosmetic distribution
+      const perNumber = await this.prisma.bid.groupBy({
+        by: ['number'],
+        where: { slotId: slot.id },
+        _sum: { count: true },
+      });
+      const realUnitsMap = new Map<number, number>();
+      for (const r of perNumber)
+        realUnitsMap.set(Number(r.number), Number(r._sum?.count ?? 0));
+      for (let n = 1; n <= 37; n++)
+        if (!realUnitsMap.has(n)) realUnitsMap.set(n, 0);
 
       let dummyUnits = 0;
       let unitPrize = 0;
@@ -427,89 +497,127 @@ export class BiddingService {
       let scaled = false;
 
       if (R > 0) {
-        const M = maxAllowedPayout;
-
         if (M <= 0) {
-          // no money to pay winners
           dummyUnits = 0;
           unitPrize = 0;
           payoutToReal = 0;
           scaled = true;
         } else {
+          // compute minimum dummy needed to cap payout to M
           const D = Math.ceil((W * R) / M - R);
           dummyUnits = Math.max(0, D);
 
-          if (R + dummyUnits > maxPerNumber) {
-            // fallback → scale payout
-            dummyUnits = 0;
-            unitPrize = Number((M / R).toFixed(2));
-            payoutToReal = Number((unitPrize * R).toFixed(2));
-            scaled = true;
-          } else {
-            // normal dummy method
-            unitPrize = Number((W / (R + dummyUnits)).toFixed(2));
-            payoutToReal = Number((unitPrize * R).toFixed(2));
-          }
+          const unitPrizeRaw = W / (R + dummyUnits); // raw (unrounded)
+          unitPrize = Number(unitPrizeRaw.toFixed(2)); // display/transaction rounding
+          const payoutRaw = unitPrizeRaw * R;
+          payoutToReal = Number(payoutRaw.toFixed(2));
         }
       } else {
-        // No real winners → cosmetic dummy winners
+        // no real winners → cosmetic dummy only for display, and real payout = 0
         const p = Math.floor(Math.random() * (50 - 20 + 1)) + 20;
         dummyUnits = Math.ceil(W / p);
-
-        if (dummyUnits > maxPerNumber) dummyUnits = maxPerNumber;
-
         unitPrize = Number((W / dummyUnits).toFixed(2));
         payoutToReal = 0;
       }
 
-      // save result
-      const draw = await saveDraw({
+      // Build cosmetic distribution (display only)
+      const cosmeticUnits = this.buildCosmeticUnitsForLd(
+        realUnitsMap,
+        winningNumber,
+        dummyUnits,
+      );
+
+      // If there are real winners and payoutToReal > 0, attempt to credit them FIRST
+      if (R > 0 && payoutToReal > 0) {
+        const winningBids = await this.prisma.bid.findMany({
+          where: { slotId: slot.id, number: winningNumber },
+        });
+        const failedCredits: Array<{
+          userId: string;
+          bidId: string;
+          reason: string;
+        }> = [];
+
+        // Use unitPrizeRaw for fair per-winner calculation when available
+        const unitPrizeRaw = R + dummyUnits > 0 ? W / (R + dummyUnits) : 0;
+
+        for (const b of winningBids) {
+          const count = Number(b.count ?? 0);
+          // compute per-winner payout from raw unit price then round
+          const payoutRaw = unitPrizeRaw * count;
+          const payout = Number(payoutRaw.toFixed(2));
+
+          if (payout <= 0) {
+            failedCredits.push({
+              userId: b.userId,
+              bidId: b.id,
+              reason: 'payout rounded to 0',
+            });
+            continue;
+          }
+
+          try {
+            // creditWinning may throw if wallet not found or amount invalid
+            await this.walletService.creditWinning(b.userId, payout, {
+              slotId: slot.id,
+              bidId: b.id,
+            });
+          } catch (err: any) {
+            console.error('creditWinning failed for LD', {
+              userId: b.userId,
+              bidId: b.id,
+              err,
+            });
+            failedCredits.push({
+              userId: b.userId,
+              bidId: b.id,
+              reason: String(err?.message ?? err),
+            });
+          }
+        }
+
+        if (failedCredits.length > 0) {
+          // Do not persist draw or mark slot completed if credits failed.
+          // Return clear failure so admin can investigate.
+          throw new BadRequestException({
+            message: 'Some winner credits failed',
+            details: failedCredits,
+          });
+        }
+      }
+
+      // All credits (if any) succeeded. Persist draw and mark slot completed.
+      const draw = await persistDraw({
         winner: String(winningNumber),
         dummyUnits,
         totalUnits: R + dummyUnits,
         unitPrize,
         payoutTotal: payoutToReal,
-        meta: { scaled, mode: 'LD' },
+        meta: {
+          scaled,
+          mode: 'LD',
+          cosmeticUnits,
+          credited: R > 0 && payoutToReal > 0 ? true : false,
+        },
       });
 
-      // credit winning payouts
-      if (R > 0 && payoutToReal > 0) {
-        const winningBids = await this.prisma.bid.findMany({
-          where: { slotId: slot.id, number: winningNumber },
-        });
-
-        for (const b of winningBids) {
-          const payout = Number((unitPrize * b.count).toFixed(2));
-          await this.walletService.creditWinning(b.userId, payout, {
-            slotId: slot.id,
-            bidId: b.id,
-          });
-        }
-      }
-
-      return {
-        message: 'LD result announced',
-        draw,
-      };
+      return { message: 'LD result announced', draw };
     }
 
-    // ===============================================================
-    // ======================= JACKPOT ================================
-    // ===============================================================
+    // ----------------- JP -----------------
     if (slot.type === 'JP') {
       if (!dto.winningCombo)
         throw new BadRequestException('winningCombo required for JP');
-
       const winningCombo = this.parseComboString(dto.winningCombo);
-
       if (winningCombo.length !== 6)
         throw new BadRequestException('Winning combo must have 6 numbers');
 
       const allBids = await this.prisma.bid.findMany({
         where: { slotId: slot.id },
+        select: { jpNumbers: true, userId: true, id: true },
       });
-
       const winners = allBids.filter((b) => {
+        if (!b.jpNumbers || b.jpNumbers.length !== 6) return false;
         const a = [...b.jpNumbers].sort((x, y) => x - y);
         const w = [...winningCombo].sort((x, y) => x - y);
         return a.join(',') === w.join(',');
@@ -517,7 +625,6 @@ export class BiddingService {
 
       const R = winners.length;
       const W = Number(settings.winningPrizeJP ?? 0);
-      const M = maxAllowedPayout;
 
       let dummyUnits = 0;
       let unitPrize = 0;
@@ -534,40 +641,119 @@ export class BiddingService {
           const D = Math.ceil((W * R) / M - R);
           dummyUnits = Math.max(0, D);
 
-          unitPrize = Number((W / (R + dummyUnits)).toFixed(2));
-          payoutToReal = Number((unitPrize * R).toFixed(2));
+          const unitPrizeRaw = W / (R + dummyUnits);
+          unitPrize = Number(unitPrizeRaw.toFixed(2));
+          const payoutRaw = unitPrizeRaw * R;
+          payoutToReal = Number(payoutRaw.toFixed(2));
         }
       } else {
-        // Cosmetic dummy winners
         const p = Math.floor(Math.random() * (50 - 20 + 1)) + 20;
         dummyUnits = Math.ceil(W / p);
         unitPrize = Number((W / dummyUnits).toFixed(2));
         payoutToReal = 0;
       }
 
-      const draw = await saveDraw({
+      // Build cosmetic units for JP - simplified: random distribution across numbers 1..37
+      const realCounts = new Map<number, number>();
+      for (const b of allBids) {
+        if (!b.jpNumbers) continue;
+        for (const n of b.jpNumbers)
+          realCounts.set(n, (realCounts.get(n) ?? 0) + 1);
+      }
+      for (let n = 1; n <= 37; n++)
+        if (!realCounts.has(n)) realCounts.set(n, 0);
+      const cosmeticUnits: Record<number, number> = {};
+      for (let n = 1; n <= 37; n++) {
+        const real = realCounts.get(n) ?? 0;
+        cosmeticUnits[n] = Math.floor(Math.random() * 3) + Math.round(real / 3);
+      }
+      for (const wn of winningCombo) {
+        cosmeticUnits[wn] =
+          (cosmeticUnits[wn] ?? 0) +
+          Math.ceil(dummyUnits / 6) +
+          Math.floor(Math.random() * 3);
+      }
+      const spikeCount = Math.floor(Math.random() * 3) + 2;
+      const candNums = Array.from({ length: 37 }, (_, i) => i + 1).filter(
+        (n) => !winningCombo.includes(n),
+      );
+      for (let i = 0; i < spikeCount; i++) {
+        const idx = Math.floor(Math.random() * candNums.length);
+        const sp = candNums.splice(idx, 1)[0];
+        cosmeticUnits[sp] = Math.max(
+          cosmeticUnits[sp] ?? 0,
+          (cosmeticUnits[winningCombo[0]] ?? 0) +
+            (Math.floor(Math.random() * 4) + 1),
+        );
+      }
+
+      // If R > 0 and payoutToReal > 0, credit winners FIRST
+      if (R > 0 && payoutToReal > 0) {
+        const failedCredits: Array<{
+          userId: string;
+          bidId: string;
+          reason: string;
+        }> = [];
+
+        // For JP, per-winner count is 1 (as you confirmed). Use unitPrizeRaw for fair calc
+        const unitPrizeRaw = R + dummyUnits > 0 ? W / (R + dummyUnits) : 0;
+
+        for (const b of winners) {
+          const payoutRaw = unitPrizeRaw * 1;
+          const payout = Number(payoutRaw.toFixed(2));
+
+          if (payout <= 0) {
+            failedCredits.push({
+              userId: b.userId,
+              bidId: b.id,
+              reason: 'payout rounded to 0',
+            });
+            continue;
+          }
+
+          try {
+            await this.walletService.creditWinning(b.userId, payout, {
+              slotId: slot.id,
+              bidId: b.id,
+            });
+          } catch (err: any) {
+            console.error('creditWinning failed for JP', {
+              userId: b.userId,
+              bidId: b.id,
+              err,
+            });
+            failedCredits.push({
+              userId: b.userId,
+              bidId: b.id,
+              reason: String(err?.message ?? err),
+            });
+          }
+        }
+
+        if (failedCredits.length > 0) {
+          throw new BadRequestException({
+            message: 'Some winner credits failed',
+            details: failedCredits,
+          });
+        }
+      }
+
+      // All credits (if any) succeeded. Persist draw and mark slot completed.
+      const draw = await persistDraw({
         winner: winningCombo.join('-'),
         dummyUnits,
         totalUnits: R + dummyUnits,
         unitPrize,
         payoutTotal: payoutToReal,
-        meta: { scaled, mode: 'JP' },
+        meta: {
+          scaled,
+          mode: 'JP',
+          cosmeticUnits,
+          credited: R > 0 && payoutToReal > 0 ? true : false,
+        },
       });
 
-      if (R > 0 && payoutToReal > 0) {
-        for (const b of winners) {
-          const payout = Number(unitPrize.toFixed(2)); // JP is per-ticket = 1 unit
-          await this.walletService.creditWinning(b.userId, payout, {
-            slotId: slot.id,
-            bidId: b.id,
-          });
-        }
-      }
-
-      return {
-        message: 'JP result announced',
-        draw,
-      };
+      return { message: 'JP result announced', draw };
     }
 
     throw new BadRequestException('Unsupported slot type');

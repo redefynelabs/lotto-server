@@ -1,3 +1,4 @@
+// results.controller.ts
 import { Controller, Get, Param, Query } from '@nestjs/common';
 import { ResultsService } from './results.service';
 
@@ -19,13 +20,26 @@ export class ResultsController {
     return this.resultsService.getResultsByDate(date);
   }
 
-  @Get(':slotId')
-  async getResultBySlotId(@Param('slotId') slotId: string) {
-    return this.resultsService.getResultBySlotId(slotId);
-  }
-
   @Get('history-grouped')
   async getHistoryGrouped() {
     return this.resultsService.getHistoryGrouped();
+  }
+
+  /* ADMIN FULL REPORT FOR ALL SLOTS */
+  @Get('admin/all')
+  async getAllAdminReports() {
+    return this.resultsService.getAllAdminReports();
+  }
+
+  /* ADMIN REPORT FOR ONE SLOT */
+  @Get('admin/report/:slotId')
+  async getAdminReport(@Param('slotId') slotId: string) {
+    return this.resultsService.getAdminSlotResult(slotId);
+  }
+
+  /* BASIC RESULT BY SLOT */
+  @Get(':slotId')
+  async getResultBySlotId(@Param('slotId') slotId: string) {
+    return this.resultsService.getResultBySlotId(slotId);
   }
 }
