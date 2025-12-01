@@ -44,24 +44,29 @@ export class AuthController {
     const { accessToken, refreshToken, user } =
       await this.authService.login(dto);
 
+    const isProd = process.env.NODE_ENV === 'production';
+
     // set cookies for web
     res.cookie('access_token', accessToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
+      secure: isProd,
       maxAge: 15 * 60 * 1000,
-      sameSite: 'none',
+      sameSite: isProd ? 'none' : 'lax',
+      domain: isProd ? '.redefyne.in' : undefined,
       path: '/',
     });
     res.cookie('refresh_token', refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       maxAge: 7 * 24 * 60 * 60 * 1000,
-      sameSite: 'none',
+      sameSite: isProd ? 'none' : 'lax',
+      domain: isProd ? '.redefyne.in' : undefined,
       path: '/',
     });
     res.cookie('app_user', JSON.stringify(user), {
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'none',
+      sameSite: isProd ? 'none' : 'lax',
+      domain: isProd ? '.redefyne.in' : undefined,
       maxAge: 7 * 24 * 60 * 60 * 1000,
       path: '/',
     });
@@ -79,20 +84,25 @@ export class AuthController {
     const token = bodyToken || req.cookies?.refresh_token;
     const { accessToken, refreshToken } = await this.authService.refresh(token);
 
+    const isProd = process.env.NODE_ENV === 'production';
+
+
     // if request came from web cookie flow, update cookies
     if (req.cookies?.refresh_token) {
       res.cookie('access_token', accessToken, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
+        secure: isProd,
         maxAge: 15 * 60 * 1000,
-        sameSite: 'none',
+        sameSite: isProd ? 'none' : 'lax',
+        domain: isProd ? '.redefyne.in' : undefined,
         path: '/',
       });
       res.cookie('refresh_token', refreshToken, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
+        secure: isProd,
         maxAge: 7 * 24 * 60 * 60 * 1000,
-        sameSite: 'none',
+        sameSite: isProd ? 'none' : 'lax',
+        domain: isProd ? '.redefyne.in' : undefined,
         path: '/',
       });
     }
