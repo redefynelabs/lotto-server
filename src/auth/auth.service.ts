@@ -12,6 +12,7 @@ import { hashPassword, comparePassword } from 'src/utils/password.util';
 import { generateOtp } from 'src/utils/otp.util';
 import { JwtService } from '@nestjs/jwt';
 import { ApproveAgentDto } from './dto/approve-agent.dto';
+import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
 export class AuthService {
@@ -20,45 +21,96 @@ export class AuthService {
     private jwtService: JwtService,
   ) {}
 
-  async generateTokenPair(userId: string, role: string) {
-    const accessToken = await this.jwtService.signAsync(
+  // --- Helper to create JWTs
+  private async createAccessToken(userId: string, role: string) {
+    return this.jwtService.signAsync(
       { sub: userId, role },
       { expiresIn: '15m' },
     );
+  }
 
-    const refreshToken = await this.jwtService.signAsync(
-      { sub: userId },
+  // If you want stronger refresh tokens, you can sign with a jti or nonce
+  private async createRefreshToken(userId: string) {
+    // include a jti to make token rotation easier to track if needed
+    return this.jwtService.signAsync(
+      { sub: userId, jti: uuidv4() },
       { expiresIn: '7d' },
     );
+  }
 
-    // Save refresh token in DB
-    await this.prisma.refreshToken.create({
-      data: {
-        userId,
-        token: refreshToken,
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      },
+  /**
+   * Generate token pair and store refresh token (rotate/replace existing).
+   * This method *replaces* any existing refresh token for the user.
+   */
+  async generateTokenPair(userId: string, role: string) {
+    const accessToken = await this.createAccessToken(userId, role);
+    const refreshToken = await this.createRefreshToken(userId);
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.refreshToken.deleteMany({ where: { userId } });
+      await tx.refreshToken.create({
+        data: {
+          userId,
+          token: refreshToken,
+          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        },
+      });
     });
+
 
     return { accessToken, refreshToken };
   }
 
   // Refresh token flow
-  async refresh(refreshToken: string) {
-    const stored = await this.prisma.refreshToken.findUnique({
-      where: { token: refreshToken },
-    });
-
-    if (!stored || stored.expiresAt < new Date()) {
-      throw new UnauthorizedException('Refresh token expired or invalid');
+  async refresh(oldRefreshToken: string) {
+    if (!oldRefreshToken) {
+      throw new UnauthorizedException('Missing refresh token');
     }
 
-    const newAccessToken = await this.jwtService.signAsync(
-      { sub: stored.userId },
-      { expiresIn: '15m' },
-    );
+    // Find stored token record
+    const stored = await this.prisma.refreshToken.findUnique({
+      where: { token: oldRefreshToken },
+    });
 
-    return { accessToken: newAccessToken };
+    if (!stored) {
+      // possible reuse/attempted reuse -> reject
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+
+    if (stored.expiresAt < new Date()) {
+      // remove expired token
+      await this.prisma.refreshToken.deleteMany({
+        where: { token: oldRefreshToken },
+      });
+      throw new UnauthorizedException('Refresh token expired');
+    }
+
+    // At this point token is valid. Rotate it: issue a new refresh token and new access token.
+    const user = await this.prisma.user.findUnique({ where: { id: stored.userId } });
+    const newAccessToken = await this.createAccessToken(
+      stored.userId,
+      user?.role || Role.AGENT,
+    );
+    const newRefreshToken = await this.createRefreshToken(stored.userId);
+
+    // Replace token atomically
+    await this.prisma.$transaction([
+      this.prisma.refreshToken.deleteMany({
+        where: { token: oldRefreshToken },
+      }),
+      this.prisma.refreshToken.create({
+        data: {
+          userId: stored.userId,
+          token: newRefreshToken,
+          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        },
+      }),
+    ]);
+
+    return {
+      accessToken: newAccessToken,
+      refreshToken: newRefreshToken, // return rotated refresh token to client
+    };
   }
 
   async register(dto: RegisterDto) {
@@ -189,6 +241,7 @@ export class AuthService {
     if (user.role === Role.AGENT && !user.isApproved)
       throw new UnauthorizedException('Agent not approved');
 
+    // generate pair and persist refresh token
     const { accessToken, refreshToken } = await this.generateTokenPair(
       user.id,
       user.role,
@@ -211,11 +264,14 @@ export class AuthService {
   }
 
   // Logout and delete refresh token
-  async logout(refreshToken: string | null) {
+  async logout(refreshToken: string | null, userId?: string) {
     if (refreshToken) {
       await this.prisma.refreshToken.deleteMany({
         where: { token: refreshToken },
       });
+    } else if (userId) {
+      // fallback: delete all tokens for user
+      await this.prisma.refreshToken.deleteMany({ where: { userId } });
     }
 
     return { message: 'Logged out successfully' };

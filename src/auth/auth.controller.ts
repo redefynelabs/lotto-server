@@ -44,58 +44,76 @@ export class AuthController {
     const { accessToken, refreshToken, user } =
       await this.authService.login(dto);
 
-    // Web: set cookies
+    // set cookies for web
     res.cookie('access_token', accessToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
       maxAge: 15 * 60 * 1000,
+      sameSite: 'lax',
+      path: '/',
     });
-
     res.cookie('refresh_token', refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+      sameSite: 'lax',
+      path: '/',
+    });
+    res.cookie('app_user', JSON.stringify(user), {
+      secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
       maxAge: 7 * 24 * 60 * 60 * 1000,
+      path: '/',
     });
 
+    // return tokens too for mobile
     return { message: 'Login successful', accessToken, refreshToken, user };
   }
 
   @Post('refresh')
-  async refresh(@Body('refreshToken') bodyToken: string, @Req() req) {
-    // mobile: sent in body
-    let token = bodyToken;
+  async refresh(
+    @Body('refreshToken') bodyToken: string,
+    @Req() req: any,
+    @Res({ passthrough: true }) res: any,
+  ) {
+    const token = bodyToken || req.cookies?.refresh_token;
+    const { accessToken, refreshToken } = await this.authService.refresh(token);
 
-    // web: auto from cookie
-    if (!token && req.cookies?.refresh_token) {
-      token = req.cookies.refresh_token;
+    // if request came from web cookie flow, update cookies
+    if (req.cookies?.refresh_token) {
+      res.cookie('access_token', accessToken, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        maxAge: 15 * 60 * 1000,
+        sameSite: 'lax',
+        path: '/',
+      });
+      res.cookie('refresh_token', refreshToken, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+        sameSite: 'lax',
+        path: '/',
+      });
     }
 
-    const result = await this.authService.refresh(token);
-    return result;
+    return { accessToken, refreshToken };
   }
 
   @Post('logout')
   async logout(
-    @Req() req,
     @Body('refreshToken') bodyToken: string,
-    @Res({ passthrough: true }) res,
+    @Req() req: any,
+    @Res({ passthrough: true }) res: any,
   ) {
-    let token = bodyToken;
+    const token = bodyToken || req.cookies?.refresh_token;
+    // optionally if req.user available, pass userId too
+    await this.authService.logout(token, req.user?.userId);
 
-    // web reads from cookies
-    if (!token && req.cookies?.refresh_token) {
-      token = req.cookies.refresh_token;
-    }
-
-    await this.authService.logout(token);
-
-    // clear cookies for web
     res.clearCookie('access_token');
     res.clearCookie('refresh_token');
     res.clearCookie('app_user');
 
-    return { message: 'Logged out successfully' };
+    return { message: 'Logged out' };
   }
 }
