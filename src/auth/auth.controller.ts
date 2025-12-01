@@ -1,4 +1,12 @@
-import { Controller, Post, Body, Patch, UseGuards, Res } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  Patch,
+  UseGuards,
+  Res,
+  Req,
+} from '@nestjs/common';
 import express from 'express';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
@@ -33,45 +41,60 @@ export class AuthController {
     @Body() dto: LoginDto,
     @Res({ passthrough: true }) res: express.Response,
   ) {
-    const result = await this.authService.login(dto);
+    const { accessToken, refreshToken, user } =
+      await this.authService.login(dto);
 
-    // Set httpOnly cookie
-    res.cookie('access_token', result.accessToken, {
+    // Web: set cookies
+    res.cookie('access_token', accessToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production' ? true : false,
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-      path: '/',
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 15 * 60 * 1000,
     });
 
-    // Also set non-httpOnly user cookie for middleware
-    res.cookie('app_user', JSON.stringify(result.user), {
-      secure: process.env.NODE_ENV === 'production' ? true : false,
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+    res.cookie('refresh_token', refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
       maxAge: 7 * 24 * 60 * 60 * 1000,
-      path: '/',
     });
 
-    // Don't return token in body
-    const { accessToken, ...safe } = result;
-    return safe;
+    return { message: 'Login successful', accessToken, refreshToken, user };
+  }
+
+  @Post('refresh')
+  async refresh(@Body('refreshToken') bodyToken: string, @Req() req) {
+    // mobile: sent in body
+    let token = bodyToken;
+
+    // web: auto from cookie
+    if (!token && req.cookies?.refresh_token) {
+      token = req.cookies.refresh_token;
+    }
+
+    const result = await this.authService.refresh(token);
+    return result;
   }
 
   @Post('logout')
-  @UseGuards(JwtAuthGuard)
-  async logout(@Res({ passthrough: true }) res: express.Response) {
-    res.clearCookie('access_token', {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production' ? true : false,
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      path: '/',
-    });
+  async logout(
+    @Req() req,
+    @Body('refreshToken') bodyToken: string,
+    @Res({ passthrough: true }) res,
+  ) {
+    let token = bodyToken;
 
-    res.clearCookie('app_user', {
-      secure: process.env.NODE_ENV === 'production' ? true : false,
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      path: '/',
-    });
+    // web reads from cookies
+    if (!token && req.cookies?.refresh_token) {
+      token = req.cookies.refresh_token;
+    }
+
+    await this.authService.logout(token);
+
+    // clear cookies for web
+    res.clearCookie('access_token');
+    res.clearCookie('refresh_token');
+    res.clearCookie('app_user');
 
     return { message: 'Logged out successfully' };
   }

@@ -102,7 +102,19 @@ model User {
   // Relations
   wallet Wallet[]
   bids   Bid[]
+  RefreshToken  RefreshToken[]
 }
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+}
+
 
 model Wallet {
   id     String @id @default(uuid())

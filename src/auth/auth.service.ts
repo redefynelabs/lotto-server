@@ -20,6 +20,47 @@ export class AuthService {
     private jwtService: JwtService,
   ) {}
 
+  async generateTokenPair(userId: string, role: string) {
+    const accessToken = await this.jwtService.signAsync(
+      { sub: userId, role },
+      { expiresIn: '15m' },
+    );
+
+    const refreshToken = await this.jwtService.signAsync(
+      { sub: userId },
+      { expiresIn: '7d' },
+    );
+
+    // Save refresh token in DB
+    await this.prisma.refreshToken.create({
+      data: {
+        userId,
+        token: refreshToken,
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      },
+    });
+
+    return { accessToken, refreshToken };
+  }
+
+  // Refresh token flow
+  async refresh(refreshToken: string) {
+    const stored = await this.prisma.refreshToken.findUnique({
+      where: { token: refreshToken },
+    });
+
+    if (!stored || stored.expiresAt < new Date()) {
+      throw new UnauthorizedException('Refresh token expired or invalid');
+    }
+
+    const newAccessToken = await this.jwtService.signAsync(
+      { sub: stored.userId },
+      { expiresIn: '15m' },
+    );
+
+    return { accessToken: newAccessToken };
+  }
+
   async register(dto: RegisterDto) {
     const exists = await this.prisma.user.findUnique({
       where: { phone: dto.phone },
@@ -148,14 +189,15 @@ export class AuthService {
     if (user.role === Role.AGENT && !user.isApproved)
       throw new UnauthorizedException('Agent not approved');
 
-    const token = await this.jwtService.signAsync({
-      sub: user.id,
-      role: user.role,
-    });
+    const { accessToken, refreshToken } = await this.generateTokenPair(
+      user.id,
+      user.role,
+    );
 
     return {
       message: 'Login successful',
-      accessToken: token,
+      accessToken,
+      refreshToken,
       user: {
         id: user.id,
         firstName: user.firstName,
@@ -167,5 +209,15 @@ export class AuthService {
       },
     };
   }
-  
+
+  // Logout and delete refresh token
+  async logout(refreshToken: string | null) {
+    if (refreshToken) {
+      await this.prisma.refreshToken.deleteMany({
+        where: { token: refreshToken },
+      });
+    }
+
+    return { message: 'Logged out successfully' };
+  }
 }
