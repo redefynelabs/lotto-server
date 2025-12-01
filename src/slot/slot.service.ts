@@ -430,7 +430,7 @@ export class SlotService {
   }
 
   // ---------
-  // AUTO ANNOUNCE LD
+  // AUTO ANNOUNCE LD (NO LIMIT)
   // ---------
   private async autoAnnounceLD(slotId: string) {
     const slot = await this.prisma.slot.findUnique({
@@ -444,7 +444,6 @@ export class SlotService {
 
     const W = Number(settings.winningPrize ?? 0);
     const minProfitPct = Number(settings.minProfitPct ?? 0.15);
-    const maxBidLimitPerNumber = Number(settings.ldBidLimitPerNumber ?? 120);
 
     // total collected
     const aggCollected = await this.prisma.bid.aggregate({
@@ -453,9 +452,9 @@ export class SlotService {
     });
 
     const C = aggCollected._sum?.amount ? Number(aggCollected._sum.amount) : 0;
-    const M = Number((C - C * minProfitPct).toFixed(2));
+    const M = Number((C - C * minProfitPct).toFixed(2)); // max allowed payout
 
-    // units per number
+    // group bids by number
     const perNumber = await this.prisma.bid.groupBy({
       by: ['number'],
       where: { slotId },
@@ -463,6 +462,7 @@ export class SlotService {
     });
 
     const unitsMap = new Map<number, number>();
+
     for (const r of perNumber) {
       unitsMap.set(Number(r.number), Number(r._sum?.count ?? 0));
     }
@@ -472,21 +472,18 @@ export class SlotService {
       if (!unitsMap.has(n)) unitsMap.set(n, 0);
     }
 
-    // STEP 1: sort by unit ASC
+    // lowest units
     let sorted = [...unitsMap.entries()].sort((a, b) => a[1] - b[1]);
-
-    // STEP 2: find min units
     const minUnits = sorted[0][1];
 
-    // STEP 3: select all tied numbers
-    let tied = sorted.filter(([num, units]) => units === minUnits);
+    // all tied
+    let tied = sorted.filter(([_, units]) => units === minUnits);
 
-    // STEP 4: if >5 tied, randomly pick 5
+    // random pick only if more than 5
     if (tied.length > 5) {
       tied = tied.sort(() => Math.random() - 0.5).slice(0, 5);
     }
 
-    // Candidates = tied list
     const candidates = tied;
 
     type Eval = {
@@ -495,7 +492,6 @@ export class SlotService {
       dummyUnits: number;
       unitPrize: number;
       payoutToReal: number;
-      scaledPayoutUsed: boolean;
       profit: number;
     };
 
@@ -505,42 +501,29 @@ export class SlotService {
       let dummyUnits = 0;
       let unitPrize = 0;
       let payoutToReal = 0;
-      let scaledPayoutUsed = false;
 
       if (R > 0) {
         if (M <= 0) {
-          dummyUnits = 0;
+          // no money to pay
           unitPrize = 0;
           payoutToReal = 0;
-          scaledPayoutUsed = true;
         } else {
+          // compute dummy units required
           const numerator = W * R;
-          const neededD = Math.ceil(numerator / M - R);
-          dummyUnits = Math.max(0, neededD);
+          dummyUnits = Math.max(0, Math.ceil(numerator / M - R));
 
-          // fallback when too many dummy units
-          if (R + dummyUnits > maxBidLimitPerNumber) {
-            dummyUnits = 0;
-            unitPrize = Number((M / R).toFixed(2));
-            payoutToReal = Number((unitPrize * R).toFixed(2));
-            scaledPayoutUsed = true;
-          } else {
-            unitPrize = Number((W / (R + dummyUnits)).toFixed(2));
-            payoutToReal = Number((unitPrize * R).toFixed(2));
-          }
+          unitPrize = Number((W / (R + dummyUnits)).toFixed(2));
+          payoutToReal = Number((unitPrize * R).toFixed(2));
         }
       } else {
-        // Zero real winners → cosmetic dummy
+        // no real units -> cosmetic dummies only
         const minDisplay = 20;
         const maxDisplay = 50;
         const chosen =
           Math.floor(Math.random() * (maxDisplay - minDisplay + 1)) +
           minDisplay;
+
         dummyUnits = Math.ceil(W / chosen);
-
-        if (dummyUnits > maxBidLimitPerNumber)
-          dummyUnits = maxBidLimitPerNumber;
-
         unitPrize = Number((W / dummyUnits).toFixed(2));
         payoutToReal = 0;
       }
@@ -551,28 +534,25 @@ export class SlotService {
         dummyUnits,
         unitPrize,
         payoutToReal,
-        scaledPayoutUsed,
         profit: Number((C - payoutToReal).toFixed(2)),
       });
     }
 
-    // pick highest profit
     evaluations.sort(
       (a, b) => b.profit - a.profit || a.realUnits - b.realUnits,
     );
-
     const best = evaluations[0];
     if (!best) return;
 
     await this.biddingService.announceResult('SYSTEM', {
       slotId,
       winningNumber: best.number,
-      note: 'AUTO: picked from least-bid numbers (fair=randomized)',
+      note: 'AUTO: least-used numbers evaluation',
     } as any);
   }
 
   // ---------
-  // AUTO ANNOUNCE JP
+  // AUTO ANNOUNCE JP (NO LIMIT)
   // ---------
   private async autoAnnounceJP(slotId: string) {
     const slot = await this.prisma.slot.findUnique({
@@ -594,7 +574,7 @@ export class SlotService {
     });
 
     const C = aggCollected._sum?.amount ? Number(aggCollected._sum.amount) : 0;
-    const M = Number((C - C * minProfitPct).toFixed(2));
+    const M = Number((C - C * minProfitPct).toFixed(2)); // allowed payout cap
 
     const bids = await this.prisma.bid.findMany({
       where: { slotId },
@@ -609,40 +589,36 @@ export class SlotService {
       comboMap.set(key, (comboMap.get(key) || 0) + 1);
     }
 
-    const combosArray = [...comboMap.entries()].map(([k, v]) => ({
-      combo: k,
-      count: v,
-    }));
-
+    // no real combos → create 5 random ones
     let candidateCombos: { combo: string; count: number }[] = [];
 
+    const combosArray = [...comboMap.entries()].map(([combo, count]) => ({
+      combo,
+      count,
+    }));
+
     if (combosArray.length === 0) {
-      // No real combos → generate 5 random ones
       for (let i = 0; i < 5; i++) {
         const set = new Set<number>();
         while (set.size < 6) set.add(Math.floor(Math.random() * 37) + 1);
-        const arr = [...set].sort((a, b) => a - b);
-        candidateCombos.push({ combo: arr.join(','), count: 0 });
+        candidateCombos.push({
+          combo: [...set].sort((a, b) => a - b).join(','),
+          count: 0,
+        });
       }
     } else {
-      // STEP 1: sort by count ASC
       combosArray.sort((a, b) => a.count - b.count);
 
-      // STEP 2: find min unit count
       const minUnits = combosArray[0].count;
-
-      // STEP 3: take all tied
       let tied = combosArray.filter((c) => c.count === minUnits);
 
-      // STEP 4: if >5, shuffle and pick 5
-      if (tied.length > 5) {
+      if (tied.length > 5)
         tied = tied.sort(() => Math.random() - 0.5).slice(0, 5);
-      }
 
       candidateCombos = tied;
     }
 
-    type EvalJP = {
+    type Eval = {
       combo: string;
       realUnits: number;
       dummyUnits: number;
@@ -651,7 +627,7 @@ export class SlotService {
       profit: number;
     };
 
-    const evals: EvalJP[] = [];
+    const evals: Eval[] = [];
 
     for (const c of candidateCombos) {
       const R = c.count;
@@ -665,8 +641,7 @@ export class SlotService {
           payoutToReal = 0;
         } else {
           const numerator = W * R;
-          const neededD = Math.ceil(numerator / M - R);
-          dummyUnits = Math.max(0, neededD);
+          dummyUnits = Math.max(0, Math.ceil(numerator / M - R));
 
           unitPrize = Number((W / (R + dummyUnits)).toFixed(2));
           payoutToReal = Number((unitPrize * R).toFixed(2));
@@ -693,15 +668,14 @@ export class SlotService {
       });
     }
 
-    // pick best
     evals.sort((a, b) => b.profit - a.profit || a.realUnits - b.realUnits);
     const best = evals[0];
     if (!best) return;
 
     await this.biddingService.announceResult('SYSTEM', {
       slotId,
-      winningCombo: best.combo.split(',').join('-'),
-      note: 'AUTO: randomized least-used combos',
+      winningCombo: best.combo.replace(/,/g, '-'),
+      note: 'AUTO: least-used combinations evaluation',
     } as any);
   }
 }
