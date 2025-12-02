@@ -86,7 +86,6 @@ export class AuthController {
 
     const isProd = process.env.NODE_ENV === 'production';
 
-
     // if request came from web cookie flow, update cookies
     if (req.cookies?.refresh_token) {
       res.cookie('access_token', accessToken, {
@@ -116,13 +115,26 @@ export class AuthController {
     @Req() req: any,
     @Res({ passthrough: true }) res: any,
   ) {
+    const isProd = process.env.NODE_ENV === 'production';
+
+    const cookieOptions = {
+      httpOnly: true,
+      secure: isProd,
+      sameSite: isProd ? 'none' : 'lax',
+      domain: isProd ? '.redefyne.in' : undefined,
+      path: '/',
+    };
+
     const token = bodyToken || req.cookies?.refresh_token;
-    // optionally if req.user available, pass userId too
     await this.authService.logout(token, req.user?.userId);
 
-    res.clearCookie('access_token');
-    res.clearCookie('refresh_token');
-    res.clearCookie('app_user');
+    // CLEAR COOKIES (using SAME OPTIONS)
+    res.clearCookie('access_token', cookieOptions);
+    res.clearCookie('refresh_token', cookieOptions);
+    res.clearCookie('app_user', {
+      ...cookieOptions,
+      httpOnly: false, // because app_user was not httpOnly
+    });
 
     return { message: 'Logged out' };
   }
