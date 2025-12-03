@@ -108,6 +108,29 @@ export class AuthController {
       path: '/',
     });
 
+    const safeUser = {
+      id: user.id,
+      role: user.role,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      phone: user.phone,
+      email: user.email,
+      isApproved: user.isApproved,
+    };
+
+    // encodeURIComponent to avoid cookie-parsing issues (quotes, spaces)
+    const encoded = encodeURIComponent(JSON.stringify(safeUser));
+
+    // Note: httpOnly: false so middleware running on Edge can read the cookie.
+    res.cookie('app_user', encoded, {
+      httpOnly: false,
+      secure: isProd,
+      maxAge: 7 * 24 * 60 * 60 * 1000, // same lifetime as refresh token or adjust
+      sameSite,
+      domain: isProd ? '.redefyne.in' : undefined,
+      path: '/',
+    });
+
     return {
       message: 'Login successful',
       accessToken,
