@@ -19,7 +19,11 @@ import { LoginDto } from './dto/login.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { AdminGuard } from './guards/admin.guard';
 import { ApproveAgentDto } from './dto/approve-agent.dto';
-import { extractDeviceId, extractRealIp, extractUserAgent } from 'src/utils/request.util';
+import {
+  extractDeviceId,
+  extractRealIp,
+  extractUserAgent,
+} from 'src/utils/request.util';
 
 @Controller('auth')
 export class AuthController {
@@ -57,6 +61,9 @@ export class AuthController {
     const userAgent = extractUserAgent(req);
     const deviceId = extractDeviceId(req, dto);
 
+    console.log('Body data:', dto);
+    console.log(dto.deviceId); // shows actual string
+    console.log(dto.userAgent);
     // ----------------------------------------------------
     // Call service
     // ----------------------------------------------------
