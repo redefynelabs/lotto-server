@@ -292,12 +292,18 @@ export class AuthService {
     const { accessToken, refreshToken } = await this.generateTokenPair(
       user.id,
       user.role,
+      {
+        deviceId: dto.deviceId,
+        ip: dto.ip,
+        userAgent: dto.userAgent,
+      },
     );
 
     return {
       message: 'Login successful',
       accessToken,
       refreshToken,
+      deviceId: dto.deviceId,
       user: {
         id: user.id,
         firstName: user.firstName,
