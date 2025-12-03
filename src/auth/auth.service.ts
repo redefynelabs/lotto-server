@@ -68,6 +68,49 @@ export class AuthService {
     return { accessToken, refreshToken };
   }
 
+  async getUserFromAccessToken(accessToken: string) {
+    if (!accessToken) throw new UnauthorizedException('No access token');
+
+    let payload: any;
+    try {
+      // Verifies signature and expiry. Throws on invalid/expired token.
+      payload = await this.jwtService.verifyAsync(accessToken);
+    } catch (err) {
+      throw new UnauthorizedException('Invalid or expired access token');
+    }
+
+    const userId = payload.sub;
+    if (!userId) throw new UnauthorizedException('Invalid token payload');
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        phone: true,
+        email: true,
+        role: true,
+        isApproved: true,
+        isPhoneVerified: true,
+      },
+    });
+
+    if (!user) throw new UnauthorizedException('User not found');
+
+    // Return a minimal "safe" user object (no secrets/tokens)
+    return {
+      id: user.id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      phone: user.phone,
+      email: user.email,
+      role: user.role,
+      isApproved: user.isApproved,
+      isPhoneVerified: user.isPhoneVerified,
+    };
+  }
+
   /**
    * Refresh flow: look up the exact token row, validate expiry, rotate only that row.
    * tokenStr - the refresh token presented by client

@@ -10,6 +10,7 @@ import {
   Get,
   Delete,
   Param,
+  UnauthorizedException,
 } from '@nestjs/common';
 import express from 'express';
 import { AuthService } from './auth.service';
@@ -160,27 +161,27 @@ export class AuthController {
 
     const ua = req.get('user-agent') ?? undefined;
 
-    // ensure undefined, not null
     const deviceId =
       bodyDeviceId ||
       (req.headers['x-device-id'] as string) ||
       (req.cookies?.['x-device-id'] as string) ||
       undefined;
 
-    const { accessToken, refreshToken } = await this.authService.refresh(
-      token,
-      {
-        deviceId,
-        ip,
-        userAgent: ua,
-      },
-    );
+    try {
+      // Your service returns ONLY accessToken & refreshToken
+      const { accessToken, refreshToken } = await this.authService.refresh(
+        token,
+        {
+          deviceId,
+          ip,
+          userAgent: ua,
+        },
+      );
 
-    const isProd = process.env.NODE_ENV === 'production';
-    const sameSite = (isProd ? 'none' : 'lax') as 'none' | 'lax';
+      const isProd = process.env.NODE_ENV === 'production';
+      const sameSite = (isProd ? 'none' : 'lax') as 'none' | 'lax';
 
-    // Update cookies
-    if (req.cookies?.refresh_token) {
+      // Update httpOnly token cookies
       res.cookie('access_token', accessToken, {
         httpOnly: true,
         secure: isProd,
@@ -198,21 +199,65 @@ export class AuthController {
         domain: isProd ? '.redefyne.in' : undefined,
         path: '/',
       });
-    }
 
-    // update x-device-id cookie
-    if (deviceId) {
-      res.cookie('x-device-id', deviceId, {
-        httpOnly: false,
-        secure: isProd,
-        maxAge: 365 * 24 * 60 * 60 * 1000,
-        sameSite,
-        domain: isProd ? '.redefyne.in' : undefined,
-        path: '/',
-      });
-    }
+      // Update device cookie
+      if (deviceId) {
+        res.cookie('x-device-id', deviceId, {
+          httpOnly: false,
+          secure: isProd,
+          maxAge: 365 * 24 * 60 * 60 * 1000,
+          sameSite,
+          domain: isProd ? '.redefyne.in' : undefined,
+          path: '/',
+        });
+      }
 
-    return { accessToken, refreshToken, deviceId };
+      // ----------------------------
+      // SET / UPDATE app_user cookie
+      // ----------------------------
+
+      let safeUser: any = null;
+
+      // Always resolve user via verified AccessToken → safe, correct, consistent
+      try {
+        safeUser = await this.authService.getUserFromAccessToken(accessToken);
+      } catch (err) {
+        safeUser = null; // can't resolve user → skip app_user
+      }
+
+      if (safeUser) {
+        const minimal = {
+          id: safeUser.id,
+          role: safeUser.role,
+          firstName: safeUser.firstName,
+          lastName: safeUser.lastName,
+          phone: safeUser.phone,
+          email: safeUser.email,
+          isApproved: safeUser.isApproved,
+        };
+
+        const encoded = encodeURIComponent(JSON.stringify(minimal));
+
+        res.cookie('app_user', encoded, {
+          httpOnly: false,
+          secure: isProd,
+          maxAge: 7 * 24 * 60 * 60 * 1000,
+          sameSite,
+          domain: isProd ? '.redefyne.in' : undefined,
+          path: '/',
+        });
+      }
+
+      return { accessToken, refreshToken, deviceId };
+    } catch (err: any) {
+      // Clear cookies on failure
+      res.clearCookie('access_token', { path: '/' });
+      res.clearCookie('refresh_token', { path: '/' });
+      res.clearCookie('app_user', { path: '/' });
+      res.clearCookie('x-device-id', { path: '/' });
+
+      throw new UnauthorizedException(err?.message || 'Refresh token invalid');
+    }
   }
 
   // -----------------------------------------------------
