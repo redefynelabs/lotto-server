@@ -160,14 +160,6 @@ export class AuthService {
     return { message: 'Nothing to logout' };
   }
 
-  /**
-   * optional helpers:
-   */
-  async revokeDevice(userId: string, deviceId: string) {
-    await this.prisma.refreshToken.deleteMany({ where: { userId, deviceId } });
-    return { message: 'Device revoked' };
-  }
-
   async register(dto: RegisterDto) {
     const exists = await this.prisma.user.findUnique({
       where: { phone: dto.phone },
@@ -316,5 +308,34 @@ export class AuthService {
         isApproved: user.isApproved,
       },
     };
+  }
+
+  // -----------------------------
+  // LIST USER DEVICES
+  // -----------------------------
+  async listDevices(userId: string) {
+    return this.prisma.refreshToken.findMany({
+      where: { userId },
+      select: {
+        id: true,
+        deviceId: true,
+        ip: true,
+        userAgent: true,
+        createdAt: true,
+        expiresAt: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  // -----------------------------
+  // REVOKE (LOGOUT) A SPECIFIC DEVICE
+  // -----------------------------
+  async revokeDevice(userId: string, deviceId: string) {
+    await this.prisma.refreshToken.deleteMany({
+      where: { userId, deviceId },
+    });
+
+    return { message: 'Device revoked successfully' };
   }
 }

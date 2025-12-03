@@ -6,6 +6,10 @@ import {
   UseGuards,
   Res,
   Req,
+  BadRequestException,
+  Get,
+  Delete,
+  Param,
 } from '@nestjs/common';
 import express from 'express';
 import { AuthService } from './auth.service';
@@ -36,21 +40,30 @@ export class AuthController {
     return this.authService.approveAgent(dto);
   }
 
-  // in AuthController
-
+  // -----------------------------------------------------
+  // LOGIN
+  // -----------------------------------------------------
   @Post('login')
   async login(
     @Body() dto: LoginDto,
     @Res({ passthrough: true }) res: express.Response,
-    @Req() req: any,
+    @Req() req: express.Request,
   ) {
-    const ip = req.ip;
-    const ua = req.get('user-agent');
-    const deviceId = (dto as any).deviceId; // optional: client can send deviceId
+    const ip =
+      (req.headers['x-forwarded-for'] as string) ||
+      req.connection?.remoteAddress ||
+      req.ip;
+
+    const ua = req.get('user-agent') ?? undefined;
+
+    let deviceId =
+      (dto as any).deviceId ||
+      (req.headers['x-device-id'] as string) ||
+      (req.cookies?.['x-device-id'] as string) ||
+      undefined; // ← ensure undefined, not null
 
     const { accessToken, refreshToken, user } = await this.authService.login({
       ...dto,
-      // pass metadata so new refresh row includes it
       deviceId,
       ip,
       userAgent: ua,
@@ -58,105 +71,180 @@ export class AuthController {
 
     const isProd = process.env.NODE_ENV === 'production';
 
-    // cookies (unchanged)
+    const sameSite = (isProd ? 'none' : 'lax') as 'none' | 'lax';
+
+    // HttpOnly cookies
     res.cookie('access_token', accessToken, {
       httpOnly: true,
       secure: isProd,
       maxAge: 15 * 60 * 1000,
-      sameSite: isProd ? 'none' : 'lax',
+      sameSite,
       domain: isProd ? '.redefyne.in' : undefined,
       path: '/',
     });
+
     res.cookie('refresh_token', refreshToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
+      secure: isProd,
       maxAge: 7 * 24 * 60 * 60 * 1000,
-      sameSite: isProd ? 'none' : 'lax',
+      sameSite,
       domain: isProd ? '.redefyne.in' : undefined,
       path: '/',
     });
-    res.cookie('app_user', JSON.stringify(user), {
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: isProd ? 'none' : 'lax',
-      domain: isProd ? '.redefyne.in' : undefined,
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-      path: '/',
-    });
 
-    return { message: 'Login successful', accessToken, refreshToken, user };
-  }
-
-  @Post('refresh')
-  async refresh(
-    @Body('refreshToken') bodyToken: string,
-    @Req() req: any,
-    @Res({ passthrough: true }) res: any,
-  ) {
-    const token = bodyToken || req.cookies?.refresh_token;
-    const ip = req.ip;
-    const ua = req.get('user-agent');
-    const deviceId = req.body?.deviceId;
-
-    const { accessToken, refreshToken } = await this.authService.refresh(
-      token,
-      { deviceId, ip, userAgent: ua },
-    );
-
-    const isProd = process.env.NODE_ENV === 'production';
-
-    if (req.cookies?.refresh_token) {
-      res.cookie('access_token', accessToken, {
-        httpOnly: true,
+    // Set readable deviceId cookie
+    if (deviceId) {
+      res.cookie('x-device-id', deviceId, {
+        httpOnly: false,
         secure: isProd,
-        maxAge: 15 * 60 * 1000,
-        sameSite: isProd ? 'none' : 'lax',
-        domain: isProd ? '.redefyne.in' : undefined,
-        path: '/',
-      });
-      res.cookie('refresh_token', refreshToken, {
-        httpOnly: true,
-        secure: isProd,
-        maxAge: 7 * 24 * 60 * 60 * 1000,
-        sameSite: isProd ? 'none' : 'lax',
+        maxAge: 365 * 24 * 60 * 60 * 1000,
+        sameSite,
         domain: isProd ? '.redefyne.in' : undefined,
         path: '/',
       });
     }
 
-    return { accessToken, refreshToken };
+    return {
+      message: 'Login successful',
+      accessToken,
+      refreshToken,
+      user,
+      deviceId,
+    };
   }
 
+  // -----------------------------------------------------
+  // REFRESH
+  // -----------------------------------------------------
+  @Post('refresh')
+  async refresh(
+    @Body('refreshToken') bodyToken: string,
+    @Body('deviceId') bodyDeviceId: string,
+    @Req() req: any,
+    @Res({ passthrough: true }) res: express.Response,
+  ) {
+    const token = bodyToken || req.cookies?.refresh_token;
+    if (!token) throw new BadRequestException('No refresh token provided');
+
+    const ip =
+      (req.headers['x-forwarded-for'] as string) ||
+      req.connection?.remoteAddress ||
+      req.ip;
+
+    const ua = req.get('user-agent') ?? undefined;
+
+    // ensure undefined, not null
+    const deviceId =
+      bodyDeviceId ||
+      (req.headers['x-device-id'] as string) ||
+      (req.cookies?.['x-device-id'] as string) ||
+      undefined;
+
+    const { accessToken, refreshToken } = await this.authService.refresh(
+      token,
+      {
+        deviceId,
+        ip,
+        userAgent: ua,
+      },
+    );
+
+    const isProd = process.env.NODE_ENV === 'production';
+    const sameSite = (isProd ? 'none' : 'lax') as 'none' | 'lax';
+
+    // Update cookies
+    if (req.cookies?.refresh_token) {
+      res.cookie('access_token', accessToken, {
+        httpOnly: true,
+        secure: isProd,
+        maxAge: 15 * 60 * 1000,
+        sameSite,
+        domain: isProd ? '.redefyne.in' : undefined,
+        path: '/',
+      });
+
+      res.cookie('refresh_token', refreshToken, {
+        httpOnly: true,
+        secure: isProd,
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+        sameSite,
+        domain: isProd ? '.redefyne.in' : undefined,
+        path: '/',
+      });
+    }
+
+    // update x-device-id cookie
+    if (deviceId) {
+      res.cookie('x-device-id', deviceId, {
+        httpOnly: false,
+        secure: isProd,
+        maxAge: 365 * 24 * 60 * 60 * 1000,
+        sameSite,
+        domain: isProd ? '.redefyne.in' : undefined,
+        path: '/',
+      });
+    }
+
+    return { accessToken, refreshToken, deviceId };
+  }
+
+  // -----------------------------------------------------
+  // LOGOUT
+  // -----------------------------------------------------
   @Post('logout')
   async logout(
     @Body('refreshToken') bodyToken: string,
     @Req() req: any,
-    @Res({ passthrough: true }) res: any,
+    @Res({ passthrough: true }) res: express.Response,
   ) {
     const isProd = process.env.NODE_ENV === 'production';
+    const sameSite = (isProd ? 'none' : 'lax') as 'none' | 'lax';
 
     const cookieOptions = {
       httpOnly: true,
       secure: isProd,
-      sameSite: isProd ? 'none' : 'lax',
+      sameSite,
       domain: isProd ? '.redefyne.in' : undefined,
       path: '/',
     };
 
     const token = bodyToken || req.cookies?.refresh_token;
-
-    // if using JwtAuthGuard you can get userId from req.user
     const userId = req.user?.userId;
 
     await this.authService.logout(token, userId);
 
-    // CLEAR COOKIES (using SAME OPTIONS)
+    // Clear cookies
     res.clearCookie('access_token', cookieOptions);
     res.clearCookie('refresh_token', cookieOptions);
-    res.clearCookie('app_user', {
-      ...cookieOptions,
+    res.clearCookie('app_user', { ...cookieOptions, httpOnly: false });
+    res.clearCookie('x-device-id', {
       httpOnly: false,
+      secure: isProd,
+      sameSite,
+      domain: isProd ? '.redefyne.in' : undefined,
+      path: '/',
     });
 
     return { message: 'Logged out' };
+  }
+
+  // -----------------------------
+  // GET ALL DEVICES
+  // -----------------------------
+  @Get('devices')
+  @UseGuards(JwtAuthGuard)
+  async getDevices(@Req() req: any) {
+    const userId = req.user?.userId;
+    return this.authService.listDevices(userId);
+  }
+
+  // -----------------------------
+  // REVOKE A DEVICE BY deviceId
+  // -----------------------------
+  @Delete('devices/:deviceId')
+  @UseGuards(JwtAuthGuard)
+  async revokeDevice(@Req() req: any, @Param('deviceId') deviceId: string) {
+    const userId = req.user?.userId;
+    return this.authService.revokeDevice(userId, deviceId);
   }
 }
