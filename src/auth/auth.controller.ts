@@ -19,6 +19,7 @@ import { LoginDto } from './dto/login.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { AdminGuard } from './guards/admin.guard';
 import { ApproveAgentDto } from './dto/approve-agent.dto';
+import { extractDeviceId, extractRealIp, extractUserAgent } from 'src/utils/request.util';
 
 @Controller('auth')
 export class AuthController {
@@ -45,35 +46,33 @@ export class AuthController {
   // -----------------------------------------------------
   @Post('login')
   async login(
-    @Body() dto: LoginDto,
+    @Body() dto: any,
+    @Req() req: any,
     @Res({ passthrough: true }) res: express.Response,
-    @Req() req: express.Request,
   ) {
-    const ip =
-      (req.headers['x-forwarded-for'] as string) ||
-      req.connection?.remoteAddress ||
-      req.ip;
+    // ----------------------------------------------------
+    // Extract data safely
+    // ----------------------------------------------------
+    const ip = extractRealIp(req);
+    const userAgent = extractUserAgent(req);
+    const deviceId = extractDeviceId(req, dto);
 
-    const ua = req.get('user-agent') ?? undefined;
-
-    let deviceId =
-      (dto as any).deviceId ||
-      (req.headers['x-device-id'] as string) ||
-      (req.cookies?.['x-device-id'] as string) ||
-      undefined; // ← ensure undefined, not null
-
+    // ----------------------------------------------------
+    // Call service
+    // ----------------------------------------------------
     const { accessToken, refreshToken, user } = await this.authService.login({
       ...dto,
       deviceId,
       ip,
-      userAgent: ua,
-    } as any);
+      userAgent,
+    });
 
+    // ----------------------------------------------------
+    // Cookies for web
+    // ----------------------------------------------------
     const isProd = process.env.NODE_ENV === 'production';
+    const sameSite = (isProd ? 'none' : 'lax') as any;
 
-    const sameSite = (isProd ? 'none' : 'lax') as 'none' | 'lax';
-
-    // HttpOnly cookies
     res.cookie('access_token', accessToken, {
       httpOnly: true,
       secure: isProd,
@@ -92,17 +91,15 @@ export class AuthController {
       path: '/',
     });
 
-    // Set readable deviceId cookie
-    if (deviceId) {
-      res.cookie('x-device-id', deviceId, {
-        httpOnly: false,
-        secure: isProd,
-        maxAge: 365 * 24 * 60 * 60 * 1000,
-        sameSite,
-        domain: isProd ? '.redefyne.in' : undefined,
-        path: '/',
-      });
-    }
+    // Set readable deviceId cookie (browser only)
+    res.cookie('x-device-id', deviceId, {
+      httpOnly: false,
+      secure: isProd,
+      maxAge: 365 * 24 * 60 * 60 * 1000,
+      sameSite,
+      domain: isProd ? '.redefyne.in' : undefined,
+      path: '/',
+    });
 
     return {
       message: 'Login successful',
