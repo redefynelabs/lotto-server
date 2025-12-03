@@ -21,7 +21,9 @@ export class AuthService {
     private jwtService: JwtService,
   ) {}
 
-  // --- Helper to create JWTs
+  // inside AuthService class
+
+  // create access token (unchanged)
   private async createAccessToken(userId: string, role: string) {
     return this.jwtService.signAsync(
       { sub: userId, role },
@@ -29,88 +31,141 @@ export class AuthService {
     );
   }
 
-  // If you want stronger refresh tokens, you can sign with a jti or nonce
-  private async createRefreshToken(userId: string) {
-    // include a jti to make token rotation easier to track if needed
-    return this.jwtService.signAsync(
-      { sub: userId, jti: uuidv4() },
+  // create refresh token with explicit jti so we can persist metadata easily
+  private async createRefreshToken(userId: string, jti?: string) {
+    const tokenJti = jti ?? uuidv4();
+    const token = await this.jwtService.signAsync(
+      { sub: userId, jti: tokenJti },
       { expiresIn: '7d' },
     );
+    return { token, jti: tokenJti };
   }
 
   /**
-   * Generate token pair and store refresh token (rotate/replace existing).
-   * This method *replaces* any existing refresh token for the user.
+   * Generate token pair and persist refresh token as new row (do NOT delete existing).
+   * Accepts optional device metadata so each device gets its own refresh row.
    */
-  async generateTokenPair(userId: string, role: string) {
+  async generateTokenPair(
+    userId: string,
+    role: string,
+    meta?: { deviceId?: string; ip?: string; userAgent?: string },
+  ) {
     const accessToken = await this.createAccessToken(userId, role);
-    const refreshToken = await this.createRefreshToken(userId);
+    const { token: refreshToken, jti } = await this.createRefreshToken(userId);
 
-    await this.prisma.$transaction(async (tx) => {
-      await tx.refreshToken.deleteMany({ where: { userId } });
-      await tx.refreshToken.create({
-        data: {
-          userId,
-          token: refreshToken,
-          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-        },
-      });
+    // create a new refreshToken row for this device/login (do NOT delete others)
+    await this.prisma.refreshToken.create({
+      data: {
+        userId,
+        token: refreshToken,
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        deviceId: meta?.deviceId,
+        ip: meta?.ip,
+        userAgent: meta?.userAgent,
+      },
     });
-
 
     return { accessToken, refreshToken };
   }
 
-  // Refresh token flow
-  async refresh(oldRefreshToken: string) {
-    if (!oldRefreshToken) {
+  /**
+   * Refresh flow: look up the exact token row, validate expiry, rotate only that row.
+   * tokenStr - the refresh token presented by client
+   * meta - optional device metadata to update the new row
+   */
+  async refresh(
+    tokenStr: string,
+    meta?: { deviceId?: string; ip?: string; userAgent?: string },
+  ) {
+    if (!tokenStr) {
       throw new UnauthorizedException('Missing refresh token');
     }
 
-    // Find stored token record
+    // find the stored token record by token value (token is unique)
     const stored = await this.prisma.refreshToken.findUnique({
-      where: { token: oldRefreshToken },
+      where: { token: tokenStr },
     });
 
     if (!stored) {
-      // possible reuse/attempted reuse -> reject
+      // token not found -> possible reuse or invalid token
       throw new UnauthorizedException('Invalid refresh token');
     }
 
-    if (stored.expiresAt < new Date()) {
-      // remove expired token
+    if (stored.expiresAt && stored.expiresAt < new Date()) {
+      // expired: remove and reject
       await this.prisma.refreshToken.deleteMany({
-        where: { token: oldRefreshToken },
+        where: { token: tokenStr },
       });
       throw new UnauthorizedException('Refresh token expired');
     }
 
-    // At this point token is valid. Rotate it: issue a new refresh token and new access token.
-    const user = await this.prisma.user.findUnique({ where: { id: stored.userId } });
+    // verify the JWT is valid semantically (signature, expiry)
+    try {
+      await this.jwtService.verifyAsync(tokenStr);
+    } catch (e) {
+      // invalid token: delete stored row to be safe
+      await this.prisma.refreshToken
+        .deleteMany({ where: { token: tokenStr } })
+        .catch(() => {});
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+
+    // rotate: delete the old row and create a new row for the same device
+    const user = await this.prisma.user.findUnique({
+      where: { id: stored.userId },
+    });
     const newAccessToken = await this.createAccessToken(
       stored.userId,
       user?.role || Role.AGENT,
     );
-    const newRefreshToken = await this.createRefreshToken(stored.userId);
+    const { token: newRefreshToken } = await this.createRefreshToken(
+      stored.userId,
+    );
 
-    // Replace token atomically
     await this.prisma.$transaction([
-      this.prisma.refreshToken.deleteMany({
-        where: { token: oldRefreshToken },
-      }),
+      this.prisma.refreshToken.delete({ where: { id: stored.id } }),
       this.prisma.refreshToken.create({
         data: {
           userId: stored.userId,
           token: newRefreshToken,
           expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          deviceId: meta?.deviceId ?? stored.deviceId,
+          ip: meta?.ip ?? stored.ip,
+          userAgent: meta?.userAgent ?? stored.userAgent,
         },
       }),
     ]);
 
     return {
       accessToken: newAccessToken,
-      refreshToken: newRefreshToken, // return rotated refresh token to client
+      refreshToken: newRefreshToken,
     };
+  }
+
+  /**
+   * logout: delete only the provided refresh token row (per-device).
+   * if no refreshToken provided but userId present, delete all tokens for that user (logout all devices).
+   */
+  async logout(refreshToken: string | null, userId?: string) {
+    if (refreshToken) {
+      await this.prisma.refreshToken.deleteMany({
+        where: { token: refreshToken },
+      });
+      return { message: 'Logged out from device' };
+    } else if (userId) {
+      await this.prisma.refreshToken.deleteMany({ where: { userId } });
+      return { message: 'Logged out from all devices' };
+    }
+
+    return { message: 'Nothing to logout' };
+  }
+
+  /**
+   * optional helpers:
+   */
+  async revokeDevice(userId: string, deviceId: string) {
+    await this.prisma.refreshToken.deleteMany({ where: { userId, deviceId } });
+    return { message: 'Device revoked' };
   }
 
   async register(dto: RegisterDto) {
@@ -261,19 +316,5 @@ export class AuthService {
         isApproved: user.isApproved,
       },
     };
-  }
-
-  // Logout and delete refresh token
-  async logout(refreshToken: string | null, userId?: string) {
-    if (refreshToken) {
-      await this.prisma.refreshToken.deleteMany({
-        where: { token: refreshToken },
-      });
-    } else if (userId) {
-      // fallback: delete all tokens for user
-      await this.prisma.refreshToken.deleteMany({ where: { userId } });
-    }
-
-    return { message: 'Logged out successfully' };
   }
 }

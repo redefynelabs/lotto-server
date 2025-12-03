@@ -36,17 +36,29 @@ export class AuthController {
     return this.authService.approveAgent(dto);
   }
 
+  // in AuthController
+
   @Post('login')
   async login(
     @Body() dto: LoginDto,
     @Res({ passthrough: true }) res: express.Response,
+    @Req() req: any,
   ) {
-    const { accessToken, refreshToken, user } =
-      await this.authService.login(dto);
+    const ip = req.ip;
+    const ua = req.get('user-agent');
+    const deviceId = (dto as any).deviceId; // optional: client can send deviceId
+
+    const { accessToken, refreshToken, user } = await this.authService.login({
+      ...dto,
+      // pass metadata so new refresh row includes it
+      deviceId,
+      ip,
+      userAgent: ua,
+    } as any);
 
     const isProd = process.env.NODE_ENV === 'production';
 
-    // set cookies for web
+    // cookies (unchanged)
     res.cookie('access_token', accessToken, {
       httpOnly: true,
       secure: isProd,
@@ -71,7 +83,6 @@ export class AuthController {
       path: '/',
     });
 
-    // return tokens too for mobile
     return { message: 'Login successful', accessToken, refreshToken, user };
   }
 
@@ -82,11 +93,17 @@ export class AuthController {
     @Res({ passthrough: true }) res: any,
   ) {
     const token = bodyToken || req.cookies?.refresh_token;
-    const { accessToken, refreshToken } = await this.authService.refresh(token);
+    const ip = req.ip;
+    const ua = req.get('user-agent');
+    const deviceId = req.body?.deviceId;
+
+    const { accessToken, refreshToken } = await this.authService.refresh(
+      token,
+      { deviceId, ip, userAgent: ua },
+    );
 
     const isProd = process.env.NODE_ENV === 'production';
 
-    // if request came from web cookie flow, update cookies
     if (req.cookies?.refresh_token) {
       res.cookie('access_token', accessToken, {
         httpOnly: true,
@@ -126,14 +143,18 @@ export class AuthController {
     };
 
     const token = bodyToken || req.cookies?.refresh_token;
-    await this.authService.logout(token, req.user?.userId);
+
+    // if using JwtAuthGuard you can get userId from req.user
+    const userId = req.user?.userId;
+
+    await this.authService.logout(token, userId);
 
     // CLEAR COOKIES (using SAME OPTIONS)
     res.clearCookie('access_token', cookieOptions);
     res.clearCookie('refresh_token', cookieOptions);
     res.clearCookie('app_user', {
       ...cookieOptions,
-      httpOnly: false, // because app_user was not httpOnly
+      httpOnly: false,
     });
 
     return { message: 'Logged out' };

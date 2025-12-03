@@ -102,17 +102,22 @@ model User {
   // Relations
   wallet Wallet[]
   bids   Bid[]
-  RefreshToken  RefreshToken[]
+  refreshTokens RefreshToken[]
 }
 
 model RefreshToken {
-  id        String   @id @default(uuid())
-  userId    String
-  token     String   @unique
-  expiresAt DateTime
-  createdAt DateTime @default(now())
+  id         String   @id @default(cuid())
+  token      String   @unique
+  userId     String
+  deviceId   String?
+  ip         String?
+  userAgent  String?
+  expiresAt  DateTime?
+  createdAt  DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
 }
 
 
