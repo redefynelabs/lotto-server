@@ -46,7 +46,7 @@ export class AuthController {
   // -----------------------------------------------------
   @Post('login')
   async login(
-    @Body() dto: any,
+    @Body() dto: LoginDto,
     @Req() req: any,
     @Res({ passthrough: true }) res: express.Response,
   ) {
