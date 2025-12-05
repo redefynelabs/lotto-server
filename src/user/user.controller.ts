@@ -1,4 +1,4 @@
-import { Controller, Get, Patch, Body, UseGuards, Param } from '@nestjs/common';
+import { Controller, Get, Patch, Body, UseGuards, Param, Delete } from '@nestjs/common';
 import { UserService } from './user.service';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -31,7 +31,6 @@ export class UserController {
     return this.userService.updateMyProfile(userId, dto);
   }
 
-  
   // ------------------------------
   // User: My Wallet
   // ------------------------------
@@ -75,6 +74,12 @@ export class UserController {
   @Patch('admin/agents/:id/approve')
   approveAgent(@Param('id') userId: string) {
     return this.userService.approveAgent(userId);
+  }
+
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  @Delete('/admin/:id')
+  async deleteUser(@Param('id') id: string) {
+    return this.userService.deleteUser(id);
   }
 
   @Patch('/admin/agents/:id/commission')

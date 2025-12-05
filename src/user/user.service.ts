@@ -57,8 +57,6 @@ export class UserService {
     });
   }
 
-  
-
   // -------------------------------------------------------
   // User: Get my wallet balance
   // -------------------------------------------------------
@@ -148,5 +146,20 @@ export class UserService {
       where: { id: userId },
       data: { isApproved: true },
     });
+  }
+
+  // -------------------------------------------------------
+  // Admin: Delete an user
+  // -------------------------------------------------------
+  async deleteUser(userId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+
+    if (!user) throw new NotFoundException('User not found');
+
+    await this.prisma.user.delete({
+      where: { id: userId },
+    });
+
+    return { message: 'User deleted with all account related data' };
   }
 }

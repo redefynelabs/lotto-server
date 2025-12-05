@@ -123,7 +123,7 @@ model RefreshToken {
 
 model Wallet {
   id     String @id @default(uuid())
-  user   User   @relation(fields: [userId], references: [id], onDelete: Restrict)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   userId String @unique
 
   // master balance (Decimal)
@@ -140,7 +140,7 @@ model Wallet {
 
 model WalletTx {
   id       String @id @default(uuid())
-  wallet   Wallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
+  wallet   Wallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
   walletId String
 
   type         WalletTxType
@@ -174,10 +174,10 @@ model Slot {
 /// Only real bids
 model Bid {
   id     String @id @default(uuid())
-  user   User   @relation(fields: [userId], references: [id], onDelete: Restrict)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   userId String
 
-  slot   Slot   @relation(fields: [slotId], references: [id], onDelete: Restrict)
+  slot   Slot   @relation(fields: [slotId], references: [id], onDelete: Cascade)
   slotId String
 
   uniqueBidId   String @unique
@@ -201,7 +201,7 @@ model Bid {
 /// Draw result (with dummy metadata only)
 model DrawResult {
   id     String @id @default(uuid())
-  slot   Slot   @relation(fields: [slotId], references: [id], onDelete: Restrict)
+  slot   Slot   @relation(fields: [slotId], references: [id], onDelete: Cascade)
   slotId String @unique
 
   winner String // "5" for LD, or JP combo like "1-3-7-12-18-35"

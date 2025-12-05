@@ -13,6 +13,11 @@ import { generateOtp } from 'src/utils/otp.util';
 import { JwtService } from '@nestjs/jwt';
 import { ApproveAgentDto } from './dto/approve-agent.dto';
 import { v4 as uuidv4 } from 'uuid';
+import {
+  ForgotPasswordDto,
+  ResetPasswordDto,
+  VerifyForgotOtpDto,
+} from './dto/forgot-password.dto';
 
 @Injectable()
 export class AuthService {
@@ -315,23 +320,33 @@ export class AuthService {
       where: { phone: dto.phone },
     });
 
-    if (!user) throw new UnauthorizedException('Invalid credentials');
-    if (!user.passwordHash)
-      throw new UnauthorizedException('Invalid credentials');
+    // PHONE NOT REGISTERED
+    if (!user) {
+      throw new UnauthorizedException('Phone number does not exist');
+    }
 
-    // Check password
+    // MISSING PASSWORD (should not happen normally)
+    if (!user.passwordHash) {
+      throw new UnauthorizedException('Password not set for this account');
+    }
+
+    // WRONG PASSWORD
     const valid = await comparePassword(dto.password, user.passwordHash);
-    if (!valid) throw new UnauthorizedException('Invalid credentials');
+    if (!valid) {
+      throw new UnauthorizedException('Incorrect password');
+    }
 
-    // Phone must be verified
-    if (!user.isPhoneVerified)
-      throw new UnauthorizedException('Phone not verified');
+    // PHONE NOT VERIFIED
+    if (!user.isPhoneVerified) {
+      throw new UnauthorizedException('Please verify your phone number');
+    }
 
-    // Agent must be approved
-    if (user.role === Role.AGENT && !user.isApproved)
-      throw new UnauthorizedException('Agent not approved');
+    // AGENT NOT APPROVED
+    if (user.role === Role.AGENT && !user.isApproved) {
+      throw new UnauthorizedException('Your account is awaiting approval');
+    }
 
-    // generate pair and persist refresh token
+    // generate tokens
     const { accessToken, refreshToken } = await this.generateTokenPair(
       user.id,
       user.role,
@@ -357,6 +372,89 @@ export class AuthService {
         isApproved: user.isApproved,
       },
     };
+  }
+
+  // --------------------------------------------
+  // SEND FORGOT PASSWORD OTP
+  // --------------------------------------------
+  async forgotPassword(dto: ForgotPasswordDto) {
+    const user = await this.prisma.user.findUnique({
+      where: { phone: dto.phone },
+    });
+
+    if (!user) {
+      throw new BadRequestException('This phone number is not registered');
+    }
+
+    const otp = generateOtp();
+    const otpExpiry = new Date(Date.now() + 5 * 60 * 1000);
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        otpCode: otp,
+        otpExpiry,
+      },
+    });
+
+    // TODO: send OTP SMS
+
+    return { message: 'OTP sent for password reset' };
+  }
+
+  // --------------------------------------------
+  // VERIFY OTP (FORGOT PASSWORD) AND ISSUE RESET TOKEN
+  // --------------------------------------------
+  async verifyForgotOtp(dto: VerifyForgotOtpDto) {
+    const user = await this.prisma.user.findUnique({
+      where: { phone: dto.phone },
+    });
+
+    if (!user) throw new BadRequestException('Invalid phone');
+
+    if (user.otpCode !== dto.otp)
+      throw new BadRequestException('Incorrect OTP');
+
+    if (!user.otpExpiry || user.otpExpiry < new Date())
+      throw new BadRequestException('OTP expired');
+
+    // Create a short-lived reset token
+    const resetToken = await this.jwtService.signAsync(
+      { sub: user.id },
+      { expiresIn: '10m' },
+    );
+
+    return {
+      message: 'OTP verified',
+      resetToken,
+    };
+  }
+
+  // --------------------------------------------
+  // RESET PASSWORD
+  // --------------------------------------------
+  async resetPassword(dto: ResetPasswordDto) {
+    let payload: any;
+    try {
+      payload = await this.jwtService.verifyAsync(dto.resetToken);
+    } catch (err) {
+      throw new UnauthorizedException('Invalid or expired reset token');
+    }
+
+    const userId = payload.sub;
+
+    const passwordHash = await hashPassword(dto.newPassword);
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        passwordHash,
+        otpCode: null,
+        otpExpiry: null,
+      },
+    });
+
+    return { message: 'Password updated successfully' };
   }
 
   // -----------------------------

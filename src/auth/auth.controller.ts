@@ -25,6 +25,7 @@ import {
   extractRealIp,
   extractUserAgent,
 } from 'src/utils/request.util';
+import { ForgotPasswordDto, ResetPasswordDto, VerifyForgotOtpDto } from './dto/forgot-password.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -298,6 +299,30 @@ export class AuthController {
     });
 
     return { message: 'Logged out' };
+  }
+
+  // -----------------------------------------------------
+  // FORGOT PASSWORD - SEND OTP
+  // -----------------------------------------------------
+  @Post('forgot-password')
+  async forgotPassword(@Body() dto: ForgotPasswordDto) {
+    return this.authService.forgotPassword(dto);
+  }
+
+  // -----------------------------------------------------
+  // VERIFY OTP FOR FORGOT PASSWORD
+  // -----------------------------------------------------
+  @Post('forgot-password/verify')
+  async verifyForgotOtp(@Body() dto: VerifyForgotOtpDto) {
+    return this.authService.verifyForgotOtp(dto);
+  }
+
+  // -----------------------------------------------------
+  // RESET PASSWORD
+  // -----------------------------------------------------
+  @Post('reset-password')
+  async resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.authService.resetPassword(dto);
   }
 
   // -----------------------------
