@@ -58,7 +58,19 @@ export class AuthService {
     const accessToken = await this.createAccessToken(userId, role);
     const { token: refreshToken, jti } = await this.createRefreshToken(userId);
 
-    // create a new refreshToken row for this device/login (do NOT delete others)
+    // -----------------------------
+    // One active session per deviceId
+    // -----------------------------
+    if (meta?.deviceId) {
+      await this.prisma.refreshToken.deleteMany({
+        where: {
+          userId,
+          deviceId: meta.deviceId,
+        },
+      });
+    }
+
+    // Create fresh token entry
     await this.prisma.refreshToken.create({
       data: {
         userId,
@@ -162,14 +174,19 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({
       where: { id: stored.userId },
     });
+
+    // create new access token (uses your createAccessToken - 15m)
     const newAccessToken = await this.createAccessToken(
       stored.userId,
       user?.role || Role.AGENT,
     );
+
+    // create new refresh token
     const { token: newRefreshToken } = await this.createRefreshToken(
       stored.userId,
     );
 
+    // transaction: remove old row and insert new row
     await this.prisma.$transaction([
       this.prisma.refreshToken.delete({ where: { id: stored.id } }),
       this.prisma.refreshToken.create({

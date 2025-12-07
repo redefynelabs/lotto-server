@@ -12,7 +12,7 @@ export class ResultsService {
   private normalizePct(value: any, fallback: number = 15) {
     const raw = Number(value ?? fallback);
     const pct = raw > 1 ? raw / 100 : raw;
-    console.log('DEBUG profitPct:', { raw, normalized: pct });
+    // console.log('DEBUG profitPct:', { raw, normalized: pct });
     return pct;
   }
 

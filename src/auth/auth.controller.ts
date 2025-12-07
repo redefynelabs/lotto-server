@@ -25,7 +25,11 @@ import {
   extractRealIp,
   extractUserAgent,
 } from 'src/utils/request.util';
-import { ForgotPasswordDto, ResetPasswordDto, VerifyForgotOtpDto } from './dto/forgot-password.dto';
+import {
+  ForgotPasswordDto,
+  ResetPasswordDto,
+  VerifyForgotOtpDto,
+} from './dto/forgot-password.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -63,9 +67,9 @@ export class AuthController {
     const userAgent = extractUserAgent(req);
     const deviceId = extractDeviceId(req, dto);
 
-    console.log('Body data:', dto);
-    console.log(dto.deviceId); // shows actual string
-    console.log(dto.userAgent);
+    // console.log('Body data:', dto);
+    // console.log(dto.deviceId); // shows actual string
+    // console.log(dto.userAgent);
     // ----------------------------------------------------
     // Call service
     // ----------------------------------------------------
@@ -152,13 +156,21 @@ export class AuthController {
     @Req() req: any,
     @Res({ passthrough: true }) res: express.Response,
   ) {
+    // console.log('🔥 ---- REFRESH DEBUG ----');
+    // console.log('req.cookies:', req.cookies);
+    // console.log('req.body:', req.body);
+    // console.log('req.headers:', req.headers);
+
     const token = bodyToken || req.cookies?.refresh_token;
+
+    // console.log('👉 Chosen refresh token:', token);\
+    
     if (!token) throw new BadRequestException('No refresh token provided');
 
+    // robust IP extraction
+    const forwarded = (req.headers['x-forwarded-for'] as string) || '';
     const ip =
-      (req.headers['x-forwarded-for'] as string) ||
-      req.connection?.remoteAddress ||
-      req.ip;
+      forwarded.split(',').shift() || req.connection?.remoteAddress || req.ip;
 
     const ua = req.get('user-agent') ?? undefined;
 
@@ -169,7 +181,6 @@ export class AuthController {
       undefined;
 
     try {
-      // Your service returns ONLY accessToken & refreshToken
       const { accessToken, refreshToken } = await this.authService.refresh(
         token,
         {
@@ -182,11 +193,17 @@ export class AuthController {
       const isProd = process.env.NODE_ENV === 'production';
       const sameSite = (isProd ? 'none' : 'lax') as 'none' | 'lax';
 
+      // Lifetimes (ms)
+      const ACCESS_TOKEN_MS = 15 * 60 * 1000; // 15 minutes
+      const REFRESH_TOKEN_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+      const APP_USER_MS = REFRESH_TOKEN_MS;
+      const DEVICE_COOKIE_MS = 365 * 24 * 60 * 60 * 1000; // 1 year
+
       // Update httpOnly token cookies
       res.cookie('access_token', accessToken, {
         httpOnly: true,
         secure: isProd,
-        maxAge: 15 * 60 * 1000,
+        maxAge: ACCESS_TOKEN_MS,
         sameSite,
         domain: isProd ? '.redefyne.in' : undefined,
         path: '/',
@@ -195,18 +212,18 @@ export class AuthController {
       res.cookie('refresh_token', refreshToken, {
         httpOnly: true,
         secure: isProd,
-        maxAge: 7 * 24 * 60 * 60 * 1000,
+        maxAge: REFRESH_TOKEN_MS,
         sameSite,
         domain: isProd ? '.redefyne.in' : undefined,
         path: '/',
       });
 
-      // Update device cookie
+      // Update device cookie (accessible by JS)
       if (deviceId) {
         res.cookie('x-device-id', deviceId, {
           httpOnly: false,
           secure: isProd,
-          maxAge: 365 * 24 * 60 * 60 * 1000,
+          maxAge: DEVICE_COOKIE_MS,
           sameSite,
           domain: isProd ? '.redefyne.in' : undefined,
           path: '/',
@@ -216,14 +233,11 @@ export class AuthController {
       // ----------------------------
       // SET / UPDATE app_user cookie
       // ----------------------------
-
       let safeUser: any = null;
-
-      // Always resolve user via verified AccessToken → safe, correct, consistent
       try {
         safeUser = await this.authService.getUserFromAccessToken(accessToken);
       } catch (err) {
-        safeUser = null; // can't resolve user → skip app_user
+        safeUser = null;
       }
 
       if (safeUser) {
@@ -236,26 +250,27 @@ export class AuthController {
           email: safeUser.email,
           isApproved: safeUser.isApproved,
         };
-
         const encoded = encodeURIComponent(JSON.stringify(minimal));
 
         res.cookie('app_user', encoded, {
           httpOnly: false,
           secure: isProd,
-          maxAge: 7 * 24 * 60 * 60 * 1000,
+          maxAge: APP_USER_MS,
           sameSite,
           domain: isProd ? '.redefyne.in' : undefined,
           path: '/',
         });
       }
 
+      // Return tokens also in JSON so clients that don't use cookies can store them
       return { accessToken, refreshToken, deviceId };
     } catch (err: any) {
-      // Clear cookies on failure
-      res.clearCookie('access_token', { path: '/' });
-      res.clearCookie('refresh_token', { path: '/' });
-      res.clearCookie('app_user', { path: '/' });
-      res.clearCookie('x-device-id', { path: '/' });
+      // Clear cookies on failure (use same path/domain options to ensure removal)
+      const cookieOptions: express.CookieOptions = { path: '/' };
+      res.clearCookie('access_token', cookieOptions);
+      res.clearCookie('refresh_token', cookieOptions);
+      res.clearCookie('app_user', cookieOptions);
+      res.clearCookie('x-device-id', cookieOptions);
 
       throw new UnauthorizedException(err?.message || 'Refresh token invalid');
     }
