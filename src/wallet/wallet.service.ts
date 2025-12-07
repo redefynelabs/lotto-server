@@ -591,6 +591,7 @@ export class WalletService {
     const result: Array<{
       agentId: string;
       name: string;
+      phone: string;
       earned: number;
       settled: number;
       pending: number;
@@ -638,6 +639,7 @@ export class WalletService {
           a.phone ||
           a.email ||
           a.id,
+        phone: a.phone,
         earned,
         settled,
         pending,
