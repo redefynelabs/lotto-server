@@ -6,6 +6,7 @@ import {
   Body,
   Param,
   UseGuards,
+  Query,
 } from '@nestjs/common';
 import { SlotService } from './slot.service';
 import { CreateSlotDto } from './dto/create-slot.dto';
@@ -36,6 +37,11 @@ export class SlotController {
   @UseGuards(JwtAuthGuard, AdminGuard)
   generate() {
     return this.slotService.generateFutureSlots();
+  }
+
+  @Get('by-date')
+  getByDate(@Query('date') date: string) {
+    return this.slotService.getSlotsByDate(date);
   }
 
   @Get('grouped-by-date')

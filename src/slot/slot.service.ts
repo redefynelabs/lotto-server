@@ -309,6 +309,56 @@ export class SlotService {
   }
 
   // -------------------------
+  // Get slots by MYT date (YYYY-MM-DD)
+  // -------------------------
+  async getSlotsByDate(date: string) {
+    if (!date) {
+      throw new BadRequestException('date query is required (YYYY-MM-DD)');
+    }
+
+    // Parse MYT date safely
+    const mytDay = DateTime.fromISO(date, { zone: MYT });
+
+    if (!mytDay.isValid) {
+      throw new BadRequestException('Invalid date format');
+    }
+
+    const dayStartMYT = mytDay.startOf('day');
+    const dayEndMYT = mytDay.endOf('day');
+
+    const dayStartUTC = toUTCDate(dayStartMYT);
+    const dayEndUTC = toUTCDate(dayEndMYT);
+
+    const slots = await this.prisma.slot.findMany({
+      where: {
+        slotTime: {
+          gte: dayStartUTC,
+          lte: dayEndUTC,
+        },
+      },
+      orderBy: { slotTime: 'asc' },
+    });
+
+    return {
+      date,
+      LD: slots
+        .filter((s) => s.type === SlotType.LD)
+        .map((s) => ({
+          ...s,
+          slotTimeMYT: getMalaysiaDate(s.slotTime).toISO(),
+          slotTimeFormatted: getMalaysiaDate(s.slotTime).toFormat('HH:mm'),
+        })),
+      JP: slots
+        .filter((s) => s.type === SlotType.JP)
+        .map((s) => ({
+          ...s,
+          slotTimeMYT: getMalaysiaDate(s.slotTime).toISO(),
+          slotTimeFormatted: getMalaysiaDate(s.slotTime).toFormat('HH:mm'),
+        })),
+    };
+  }
+
+  // -------------------------
   // Public: get all slots
   // -------------------------
   async getAllSlots() {
