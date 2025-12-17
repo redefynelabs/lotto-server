@@ -30,7 +30,6 @@ export class BiddingService {
     private prisma: PrismaService,
     private walletService: WalletService,
     private readonly resultsStream: ResultStreamService,
-
   ) {}
 
   // helper: generate unique bid id
@@ -113,12 +112,22 @@ export class BiddingService {
     const slot = await this.prisma.slot.findUnique({
       where: { id: dto.slotId },
     });
+
+    console.log(slot);
+
     if (!slot) throw new NotFoundException('Slot not found');
 
     if (slot.status !== 'OPEN')
       throw new BadRequestException('Slot is not open for bidding');
     if (new Date() > new Date(slot.windowCloseAt))
       throw new BadRequestException('Bidding window closed for this slot');
+
+    const bidPrize = Number((slot as any).settingsJson?.bidPrize);
+    const count = dto.count != null ? Number(dto.count) : 0;
+
+    if (!Number.isFinite(bidPrize) || bidPrize <= 0) {
+      throw new BadRequestException('Slot bid prize is not configured');
+    }
 
     // load settings
     const settings = await this.prisma.appSettings.findFirst();
@@ -149,8 +158,17 @@ export class BiddingService {
       //   );
       // }
 
-      // calculate amount
-      const amount = Number(settings.bidPrizeLD) * Number(dto.count);
+      if (!Number.isInteger(count) || count <= 0) {
+        throw new BadRequestException('count must be positive');
+      }
+
+      const amount = bidPrize * count;
+
+      if (!Number.isFinite(amount) || amount <= 0) {
+        throw new BadRequestException(`Invalid bid amount: ${amount}`);
+      }
+
+      console.log(amount);
 
       // debit wallet (may go negative)
       await this.walletService.debitForBid(agentId, amount, {
@@ -224,7 +242,7 @@ export class BiddingService {
           );
       }
 
-      const amount = Number(settings.bidPrizeJP); // per combo
+      const amount = bidPrize; // per combo
 
       // debit wallet
       await this.walletService.debitForBid(agentId, amount, {
@@ -322,7 +340,7 @@ export class BiddingService {
               id: true,
               type: true,
               slotTime: true,
-              status: true, 
+              status: true,
               drawResult: {
                 select: {
                   winner: true,
@@ -606,7 +624,6 @@ export class BiddingService {
 
       this.resultsStream.emit(draw);
 
-
       return { message: 'LD result announced', draw };
     }
 
@@ -760,7 +777,6 @@ export class BiddingService {
       });
 
       this.resultsStream.emit(draw);
-
 
       return { message: 'JP result announced', draw };
     }
