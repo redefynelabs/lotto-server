@@ -8,6 +8,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { WalletService } from '../wallet/wallet.service';
 import { CreateBidDto } from './dto/create-bid.dto';
 import { AnnounceResultDto } from './dto/announce-result.dto';
+import { ResultStreamService } from 'src/results/results-stream.service';
 
 /**
  * BiddingService
@@ -28,6 +29,8 @@ export class BiddingService {
   constructor(
     private prisma: PrismaService,
     private walletService: WalletService,
+    private readonly resultsStream: ResultStreamService,
+
   ) {}
 
   // helper: generate unique bid id
@@ -601,6 +604,9 @@ export class BiddingService {
         },
       });
 
+      this.resultsStream.emit(draw);
+
+
       return { message: 'LD result announced', draw };
     }
 
@@ -752,6 +758,9 @@ export class BiddingService {
           credited: R > 0 && payoutToReal > 0 ? true : false,
         },
       });
+
+      this.resultsStream.emit(draw);
+
 
       return { message: 'JP result announced', draw };
     }

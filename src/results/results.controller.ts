@@ -11,10 +11,21 @@ import {
 import { ResultsService } from './results.service';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { AdminGuard } from 'src/auth/guards/admin.guard';
+import { Sse } from '@nestjs/common';
+import { map } from 'rxjs/operators';
+import { ResultStreamService } from './results-stream.service';
 
 @Controller('results')
 export class ResultsController {
-  constructor(private readonly resultsService: ResultsService) {}
+  constructor(
+    private readonly resultsService: ResultsService,
+    private readonly resultsStream: ResultStreamService,
+  ) {}
+
+  @Sse('stream')
+  streamResults() {
+    return this.resultsStream.stream$.pipe(map((data) => ({ data })));
+  }
 
   @Get()
   async getAllResults(
