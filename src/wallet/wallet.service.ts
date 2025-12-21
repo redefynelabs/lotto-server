@@ -244,6 +244,60 @@ export class WalletService {
     });
   }
 
+  async refundBid(userId: string, amount: number, meta: any = {}) {
+    if (amount <= 0) throw new BadRequestException('Invalid refund amount');
+
+    return this.prisma.$transaction(async (tx) => {
+      const wallet = await tx.wallet.findUnique({ where: { userId } });
+      if (!wallet) throw new NotFoundException('Wallet not found');
+
+      const newTotal = Number(wallet.totalBalance) + amount;
+
+      await tx.wallet.update({
+        where: { id: wallet.id },
+        data: { totalBalance: newTotal },
+      });
+
+      await tx.walletTx.create({
+        data: {
+          walletId: wallet.id,
+          type: WalletTxType.BID_CREDIT,
+          amount,
+          balanceAfter: newTotal,
+          meta: { ...meta, reason: 'BID_CANCEL_REFUND' },
+        },
+      });
+
+      return newTotal;
+    });
+  }
+
+  async reverseCommission(userId: string, amount: number, meta: any = {}) {
+    if (amount <= 0) return;
+
+    return this.prisma.$transaction(async (tx) => {
+      const wallet = await tx.wallet.findUnique({ where: { userId } });
+      if (!wallet) throw new NotFoundException('Wallet not found');
+
+      const newTotal = Number(wallet.totalBalance) - amount;
+
+      await tx.wallet.update({
+        where: { id: wallet.id },
+        data: { totalBalance: newTotal },
+      });
+
+      await tx.walletTx.create({
+        data: {
+          walletId: wallet.id,
+          type: WalletTxType.COMMISSION_DEBIT,
+          amount: -amount,
+          balanceAfter: newTotal,
+          meta: { ...meta, reason: 'BID_CANCEL_REVERSAL' },
+        },
+      });
+    });
+  }
+
   // ----------------------------
   // Admin settles commission to agent (COMMISSION_SETTLEMENT)
   // This represents company paying the credited commission to the agent (cash out).

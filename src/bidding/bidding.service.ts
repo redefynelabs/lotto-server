@@ -3,12 +3,14 @@ import {
   BadRequestException,
   NotFoundException,
   Logger,
+  ForbiddenException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { WalletService } from '../wallet/wallet.service';
 import { CreateBidDto } from './dto/create-bid.dto';
 import { AnnounceResultDto } from './dto/announce-result.dto';
 import { ResultStreamService } from 'src/results/results-stream.service';
+import { Decimal } from '@prisma/client/runtime/library';
 
 /**
  * BiddingService
@@ -114,6 +116,22 @@ export class BiddingService {
     });
 
     console.log(slot);
+
+    // const user = await this.prisma.user.findUnique({
+    //   where: { id: agentId },
+    //   select: {
+    //     role: true,
+    //     commissionPct: true,
+    //   },
+    // });
+
+    // if (!user) {
+    //   throw new BadRequestException('Invalid user');
+    // }
+
+    // if (user.role === 'ADMIN') {
+    //   throw new ForbiddenException('Admins are not allowed to place bids');
+    // }
 
     if (!slot) throw new NotFoundException('Slot not found');
 
@@ -341,6 +359,7 @@ export class BiddingService {
               type: true,
               slotTime: true,
               status: true,
+              windowCloseAt: true, 
               drawResult: {
                 select: {
                   winner: true,
@@ -349,6 +368,7 @@ export class BiddingService {
               },
             },
           },
+
           user: {
             select: {
               firstName: true,
@@ -418,6 +438,65 @@ export class BiddingService {
     }
 
     throw new BadRequestException('Invalid slot type');
+  }
+
+  async cancelBid(agentId: string, bidId: string) {
+    const bid = await this.prisma.bid.findUnique({
+      where: { id: bidId },
+      include: { slot: true },
+    });
+
+    if (!bid) throw new NotFoundException('Bid not found');
+    if (bid.userId !== agentId) throw new ForbiddenException('Not your bid');
+
+    if (bid.status === 'CANCELLED')
+      throw new BadRequestException('Bid already cancelled');
+
+    if (bid.slot.status !== 'OPEN')
+      throw new BadRequestException('Slot not open');
+
+    if (new Date() > new Date(bid.slot.windowCloseAt))
+      throw new BadRequestException('Cancellation window closed');
+
+    // calculate commission that was credited
+    const user = await this.prisma.user.findUnique({
+      where: { id: agentId },
+    });
+
+    const settings = await this.prisma.appSettings.findFirst();
+    const commissionPct =
+      user?.commissionPct ?? Number(settings?.defaultCommissionPct ?? 0);
+
+    const commissionPctNumber =
+      commissionPct instanceof Decimal
+        ? commissionPct.toNumber()
+        : Number(commissionPct);
+
+    const commissionAmount = Number(
+      ((Number(bid.amount) * commissionPctNumber) / 100).toFixed(2),
+    );
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.bid.update({
+        where: { id: bidId },
+        data: {
+          status: 'CANCELLED',
+          cancelledAt: new Date(),
+        },
+      });
+
+      await this.walletService.refundBid(agentId, Number(bid.amount), {
+        bidId,
+        slotId: bid.slotId,
+      });
+
+      await this.walletService.reverseCommission(agentId, commissionAmount, {
+        bidId,
+        slotId: bid.slotId,
+      });
+
+      return { message: 'Bid cancelled successfully' };
+    });
   }
 
   // announce result for a slot (admin)

@@ -37,11 +37,18 @@ enum SlotStatus {
   CANCELLED
 }
 
+enum BidStatus {
+  ACTIVE
+  CANCELLED
+}
+
+
 enum WalletTxType {
   BID_CREDIT
   BID_DEBIT
 
   COMMISSION_CREDIT
+  COMMISSION_DEBIT
   COMMISSION_SETTLEMENT
 
   WIN_CREDIT
@@ -192,6 +199,9 @@ model Bid {
   jpNumbers Int[]
 
   amount Decimal
+
+  status     BidStatus @default(ACTIVE)
+  cancelledAt DateTime?
 
   createdAt DateTime @default(now())
 

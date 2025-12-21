@@ -26,9 +26,14 @@ export class BiddingController {
     return this.biddingService.createBid(agentId, dto);
   }
 
-  
+  @Post('cancel/:bidId')
+  @UseGuards(JwtAuthGuard)
+  cancelBid(@Req() req, @Param('bidId') bidId: string) {
+    return this.biddingService.cancelBid(req.user.userId, bidId);
+  }
+
   // limits removed and route commented
-  
+
   // @Get('remaining')
   // @UseGuards(JwtAuthGuard)
   // async getRemaining(
