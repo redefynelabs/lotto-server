@@ -11,6 +11,7 @@ import { WalletModule } from './wallet/wallet.module';
 import { BiddingModule } from './bidding/bidding.module';
 import { UserModule } from './user/user.module';
 import { ResultsModule } from './results/results.module';
+import { DashboardModule } from './dashboard/dashboard.module';
 
 @Module({
   imports: [
@@ -25,7 +26,8 @@ import { ResultsModule } from './results/results.module';
     WalletModule,
     BiddingModule,
     UserModule,
-    ResultsModule
+    ResultsModule,
+    DashboardModule
   ],
   controllers: [AppController],
   providers: [AppService],
