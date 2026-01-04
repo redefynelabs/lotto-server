@@ -3,12 +3,12 @@ import { IsNotEmpty, IsString } from 'class-validator';
 export class ForgotPasswordDto {
   @IsString()
   @IsNotEmpty()
-  phone: string;
+  email: string;
 }
 export class VerifyForgotOtpDto {
   @IsString()
   @IsNotEmpty()
-  phone: string;
+  email: string;
 
   @IsString()
   @IsNotEmpty()

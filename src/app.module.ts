@@ -12,6 +12,7 @@ import { BiddingModule } from './bidding/bidding.module';
 import { UserModule } from './user/user.module';
 import { ResultsModule } from './results/results.module';
 import { DashboardModule } from './dashboard/dashboard.module';
+import { EmailModule } from './email/email.module';
 
 @Module({
   imports: [
@@ -27,7 +28,8 @@ import { DashboardModule } from './dashboard/dashboard.module';
     BiddingModule,
     UserModule,
     ResultsModule,
-    DashboardModule
+    DashboardModule,
+    EmailModule
   ],
   controllers: [AppController],
   providers: [AppService],

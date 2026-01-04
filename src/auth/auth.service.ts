@@ -18,12 +18,14 @@ import {
   ResetPasswordDto,
   VerifyForgotOtpDto,
 } from './dto/forgot-password.dto';
+import { EmailService } from 'src/email/email.service';
 
 @Injectable()
 export class AuthService {
   constructor(
     private prisma: PrismaService,
     private jwtService: JwtService,
+    private emailService: EmailService,
   ) {}
 
   // inside AuthService class
@@ -226,17 +228,19 @@ export class AuthService {
   }
 
   async register(dto: RegisterDto) {
-    const exists = await this.prisma.user.findUnique({
-      where: { phone: dto.phone },
-    });
-
-    if (exists) throw new BadRequestException('Phone already registered');
-
     const emailExists = await this.prisma.user.findUnique({
       where: { email: dto.email },
     });
 
     if (emailExists) throw new BadRequestException('Email already registered');
+
+    
+
+    const phoneExists = await this.prisma.user.findUnique({
+      where: { phone: dto.phone },
+    });
+
+    if (phoneExists) throw new BadRequestException('Phone already registered');
 
     const otp = generateOtp();
     const otpExpiry = new Date(Date.now() + 5 * 60 * 1000);
@@ -266,6 +270,7 @@ export class AuthService {
         otpExpiry,
         isApproved: false,
         isPhoneVerified: false,
+        isEmailVerified: false,
 
         // ⭐ Set commission from settings
         commissionPct,
@@ -279,7 +284,11 @@ export class AuthService {
       create: { userId: user.id },
     });
 
-    // TODO: send SMS OTP
+    if (!user.email) {
+      throw new BadRequestException('User email is not set');
+    }
+
+    await this.emailService.sendOtp(user.email, otp);
 
     return { message: 'OTP sent', userId: user.id };
   }
@@ -300,13 +309,13 @@ export class AuthService {
     await this.prisma.user.update({
       where: { id: user.id },
       data: {
-        isPhoneVerified: true,
+        isEmailVerified: true,
         otpCode: null,
         otpExpiry: null,
       },
     });
 
-    return { message: 'Phone verified successfully' };
+    return { message: 'Email verified successfully' };
   }
 
   async approveAgent(dto: ApproveAgentDto) {
@@ -334,12 +343,12 @@ export class AuthService {
 
   async login(dto: LoginDto) {
     const user = await this.prisma.user.findUnique({
-      where: { phone: dto.phone },
+       where: { email: dto.email },
     });
 
     // PHONE NOT REGISTERED
     if (!user) {
-      throw new UnauthorizedException('Phone number does not exist');
+      throw new UnauthorizedException('Email does not exist');
     }
 
     // MISSING PASSWORD (should not happen normally)
@@ -353,9 +362,9 @@ export class AuthService {
       throw new UnauthorizedException('Incorrect password');
     }
 
-    // PHONE NOT VERIFIED
-    if (!user.isPhoneVerified) {
-      throw new UnauthorizedException('Please verify your phone number');
+    // EMAIL NOT VERIFIED
+    if (!user.isEmailVerified) {
+      throw new UnauthorizedException('Please verify your email address');
     }
 
     // AGENT NOT APPROVED
@@ -396,11 +405,15 @@ export class AuthService {
   // --------------------------------------------
   async forgotPassword(dto: ForgotPasswordDto) {
     const user = await this.prisma.user.findUnique({
-      where: { phone: dto.phone },
+      where: { email: dto.email },
     });
 
     if (!user) {
-      throw new BadRequestException('This phone number is not registered');
+      throw new BadRequestException('This email address is not registered');
+    }
+
+    if (!user.email) {
+      throw new BadRequestException('User email is not set');
     }
 
     const otp = generateOtp();
@@ -415,6 +428,7 @@ export class AuthService {
     });
 
     // TODO: send OTP SMS
+    await this.emailService.sendOtp(user.email, otp);
 
     return { message: 'OTP sent for password reset' };
   }
@@ -424,10 +438,12 @@ export class AuthService {
   // --------------------------------------------
   async verifyForgotOtp(dto: VerifyForgotOtpDto) {
     const user = await this.prisma.user.findUnique({
-      where: { phone: dto.phone },
+      where: { email: dto.email },
     });
 
-    if (!user) throw new BadRequestException('Invalid phone');
+    if (!user) throw new BadRequestException('Invalid Email Address');
+
+    if (!user.email) throw new BadRequestException('User email is not set');
 
     if (user.otpCode !== dto.otp)
       throw new BadRequestException('Incorrect OTP');

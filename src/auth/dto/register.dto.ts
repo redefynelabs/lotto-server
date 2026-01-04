@@ -13,7 +13,7 @@ export class RegisterDto {
   phone: string;
 
   @IsEmail()
-  @IsOptional()
+  @IsNotEmpty()
   email?: string;
 
   @IsDateString()

@@ -42,7 +42,6 @@ enum BidStatus {
   CANCELLED
 }
 
-
 enum WalletTxType {
   BID_CREDIT
   BID_DEBIT
@@ -100,6 +99,7 @@ model User {
 
   // OTP FIELDS (for Agents + Users)
   isPhoneVerified Boolean   @default(false)
+  isEmailVerified Boolean   @default(false)
   otpCode         String?
   otpExpiry       DateTime?
 
@@ -107,26 +107,25 @@ model User {
   updatedAt DateTime @updatedAt
 
   // Relations
-  wallet Wallet[]
-  bids   Bid[]
+  wallet        Wallet[]
+  bids          Bid[]
   refreshTokens RefreshToken[]
 }
 
 model RefreshToken {
-  id         String   @id @default(cuid())
-  token      String   @unique
-  userId     String
-  deviceId   String?
-  ip         String?
-  userAgent  String?
-  expiresAt  DateTime?
-  createdAt  DateTime @default(now())
+  id        String    @id @default(cuid())
+  token     String    @unique
+  userId    String
+  deviceId  String?
+  ip        String?
+  userAgent String?
+  expiresAt DateTime?
+  createdAt DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id])
 
   @@index([userId])
 }
-
 
 model Wallet {
   id     String @id @default(uuid())
@@ -200,7 +199,7 @@ model Bid {
 
   amount Decimal
 
-  status     BidStatus @default(ACTIVE)
+  status      BidStatus @default(ACTIVE)
   cancelledAt DateTime?
 
   createdAt DateTime @default(now())
@@ -227,4 +226,3 @@ model DrawResult {
 
   @@index([slotId])
 }
-
